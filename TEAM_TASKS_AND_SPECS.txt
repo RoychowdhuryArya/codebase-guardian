@@ -1,0 +1,251 @@
+================================================================================
+CODEBASE GUARDIAN (ARCHWARDEN) — TEAM TASK ALLOCATION & TECHNICAL SPECIFICATIONS
+NVIDIA & NEBIUS HACKATHON: CODING AND AGENTIC ENGINEERING TRACK
+================================================================================
+
+PROJECT REPOSITORY:
+  https://github.com/RoychowdhuryArya/codebase-guardian.git
+
+CORE ARCHITECTURE:
+  - Graph Engine: FalkorDB (RedisGraph openCypher) on ports 6379 / 3000
+  - AI Engine: NVIDIA Nemotron (Nano, Super, Ultra) via Nebius Token Factory / NVIDIA NIM
+  - Backend: FastAPI (Python 3.11) on port 8080
+  - Frontend: Next.js 15 + D3.js Knowledge Graph on port 3001
+  - Branching Graph Protocol: archwarden_base -> archwarden_head -> archwarden_shadow
+
+================================================================================
+SECTION 1: GLOBAL RULES & CONSTRAINTS (MANDATORY FOR ALL THREE MEMBERS)
+================================================================================
+
+1. ZERO SECRET POLICY:
+   - NEVER commit `.env`, API keys, or private tokens.
+   - All environment variables must have dummy counterparts in `.env.example`.
+   - Before running `git commit`, run `git status` and verify no secret is staged.
+
+2. GIT WORKFLOW:
+   - Everyone branches off `main`:
+       Arya:       `git checkout -b feature/arya-cli-cicd`
+       Alekhya:    `git checkout -b feature/alekhya-ast-breaking-changes`
+       Chitrakshi: `git checkout -b feature/chitrakshi-ai-remediation`
+   - PRs must be tested locally before opening pull requests to `main`.
+
+3. FALKORDB OPEN-CYPHER CONSTRAINTS:
+   - All evaluation queries must run through `store.ro_query(...)` (read-only).
+   - Parameterize all dynamic values (e.g., `{$svc, $k_hops}`) to prevent Cypher injection.
+   - Always delete transient graphs (e.g. `archwarden_head_*`, `archwarden_shadow_*`) in `finally:` blocks.
+
+4. DOCKER & RUNTIME ENVIRONMENT:
+   - Changes must run seamlessly inside the Docker Compose setup (`docker compose up -d`).
+   - If adding Python dependencies, add them to `archwarden/backend/requirements.txt`.
+   - If adding npm dependencies, add them to `archwarden/frontend/package.json`.
+
+================================================================================
+SECTION 2: WORK PACKAGE 1 — ARYA
+LEAD: CLI, GIT HOOKS, WEBHOOKS & GITHUB ACTIONS CI/CD BOT
+================================================================================
+
+OBJECTIVE:
+Transform Codebase Guardian from a manual UI test tool into an automated, 
+developer-first guardrail that intercepts git events and blocks architectural 
+regressions directly in PRs.
+
+ASSIGNED MODULES & FILES:
+  - `archwarden/cli/guardian.py`                  [NEW]
+  - `archwarden/cli/__init__.py`                  [NEW]
+  - `archwarden/backend/api/routes_webhook.py`    [NEW]
+  - `.github/workflows/guardian-ci.yml`          [NEW]
+
+DETAILED INSTRUCTIONS:
+
+1. CLI Tool (`archwarden/cli/guardian.py`):
+   - Implement a standalone Python CLI using `argparse` or `click`:
+     * Command `guardian install-hook`:
+       Installs an executable hook at `.git/hooks/pre-push` that triggers guardian.
+     * Command `guardian pre-push`:
+       - Runs `git diff origin/main...HEAD` (or staged changes if unpushed).
+       - Sends diff payload to Archwarden backend `POST /review/run`.
+       - If `new_violations` contains severity 'high', prints a formatted ASCII 
+         table of violations and exits with return code 1 (blocking the push).
+       - If clean, prints "✅ Archwarden: 0 architectural regressions detected." and exits with 0.
+     * Command `guardian scan <directory>`:
+       - Triggers full repository AST ingestion into `archwarden_base`.
+     * Command `guardian audit`:
+       - Queries `GET /review/audit` and displays current system debt.
+
+2. GitHub Actions CI/CD Workflow (`.github/workflows/guardian-ci.yml`):
+   - Trigger on: `pull_request: [opened, synchronize, reopened]`
+   - Steps:
+     a) Checkout code with full history (`fetch-depth: 0`).
+     b) Extract PR unified diff between base and head.
+     c) Spin up FalkorDB and Archwarden backend container or run test suite.
+     d) Call review endpoint to evaluate base vs head graph delta.
+     e) Use GitHub Script or PR comment API to post a rich Markdown summary on the PR:
+        - 📦 Touched Services list
+        - 💥 Blast Radius (multi-hop graph reachability)
+        - 🚨 Detected Violations (with file:line evidence and fix hints)
+        - 🛡️ Status check (Pass/Fail).
+
+3. Webhook Receiver (`archwarden/backend/api/routes_webhook.py`):
+   - Endpoint `POST /webhook/github`:
+     Accepts GitHub PR webhook payloads, parses `head_sha` and `base_sha`, pulls 
+     the diff, runs `review_pr(...)`, and returns the audit result.
+
+TEST CASES ARYA MUST IMPLEMENT & PASS:
+  - [Test-Arya-1]: `python -m archwarden.cli.guardian pre-push` on a clean feature branch returns exit code 0.
+  - [Test-Arya-2]: Introduce a deliberate cross-service violation in git staged files. Run `guardian pre-push`. 
+                   Verify exit code is 1 and the push is rejected with clear error output.
+  - [Test-Arya-3]: Verify `guardian install-hook` creates `.git/hooks/pre-push` with correct execution permissions.
+  - [Test-Arya-4]: Mock GitHub PR payload to `POST /webhook/github` returns status 200 with review summary JSON.
+
+================================================================================
+SECTION 3: WORK PACKAGE 2 — ALEKHYA
+LEAD: DEEP AST INGESTION, MULTI-LANGUAGE PARSING & BREAKING API ENGINE
+================================================================================
+
+OBJECTIVE:
+Expand the code parser beyond basic Python heuristics to support real modern 
+microservices (TypeScript/Next.js/Express + Python) and detect breaking API 
+contract changes that break downstream services.
+
+ASSIGNED MODULES & FILES:
+  - `archwarden/backend/ingest/ts_extractor.py`      [NEW]
+  - `archwarden/backend/ingest/openapi_parser.py`    [NEW]
+  - `archwarden/backend/ingest/breaking_changes.py`  [NEW]
+  - `archwarden/backend/ingest/ast_extractor.py`     [UPGRADE]
+  - `archwarden/backend/ingest/repo_walker.py`       [UPGRADE]
+
+DETAILED INSTRUCTIONS:
+
+1. TypeScript / JavaScript AST & Route Extractor (`ts_extractor.py`):
+   - Parse JS/TS files to extract:
+     * Route Definitions: Express (`app.get(...)`, `router.post(...)`), Next.js App Router 
+       (`export async function GET/POST(req)`), FastAPI/Flask routes.
+     * Client Calls: `fetch('...')`, `axios.get/post('...')`, `httpx.get('...')`.
+   - Emit `Route` and `ClientCall` nodes into the FalkorDB schema with properties:
+     `(target_hint, method, path, file, line, service, has_timeout)`.
+
+2. Breaking API Change Detection Engine (`breaking_changes.py`):
+   - Analyze unified diffs for modifications to existing API routes.
+   - Detect breaking events:
+     a) Route Deleted: An existing route URL is deleted from code.
+     b) HTTP Method Altered: e.g. Route changed from `GET /api/v1/orders` to `POST /api/v1/orders`.
+     c) Path Parameter Modified: e.g. `/orders/{id}` changed to `/orders/{order_uuid}`.
+   - Query FalkorDB to trace which other services call this route:
+     ```cypher
+     MATCH (s:Service)-[:CONTAINS*]->(:Symbol)-[:MAKES_CALL]->(cc:ClientCall)
+     MATCH (cc)-[:RESOLVES_TO]->(r:Route {path_template: $modified_path})
+     RETURN s.name AS broken_service, cc.file AS caller_file, cc.line AS caller_line
+     ```
+   - Surface this as a critical breaking change violation (P-006: Breaking API Contract).
+
+3. OpenAPI / Docker-Compose Parser (`openapi_parser.py`):
+   - Parse `openapi.yaml` / `openapi.json` files in microservices:
+     * Auto-register all documented routes and schemas.
+   - Parse `docker-compose.yml`:
+     * Discover services, port mappings, and database ownerships (`OWNS_TABLE`).
+
+TEST CASES ALEKHYA MUST IMPLEMENT & PASS:
+  - [Test-Alekhya-1]: Ingest a sample directory with both Python and TypeScript files;
+                      verify both create `Service`, `File`, `Route`, and `ClientCall` nodes in FalkorDB.
+  - [Test-Alekhya-2]: Change an existing route method from GET to POST in a test repo;
+                      verify `breaking_changes.py` outputs a breaking contract violation listing all consumer services.
+  - [Test-Alekhya-3]: Delete an endpoint in Service A; verify that Service B (which calls it)
+                      is flagged in the blast radius with an unresolved reference.
+  - [Test-Alekhya-4]: Parse a standard `openapi.yaml` and verify all endpoints load into FalkorDB with accurate HTTP verbs.
+
+================================================================================
+SECTION 4: WORK PACKAGE 3 — CHITRAKSHI
+LEAD: NVIDIA NEMOTRON AI REMEDIATION, SHADOW GRAPH VERIFICATION & ADVANCED UI
+================================================================================
+
+OBJECTIVE:
+Deliver the flagship AI capability: use NVIDIA Nemotron to generate unified 
+code diff patches that fix detected violations, mathematically prove the fix 
+in a FalkorDB Shadow Graph, and showcase it in an interactive UI.
+
+ASSIGNED MODULES & FILES:
+  - `archwarden/backend/llm/nemotron_remediator.py`  [NEW]
+  - `archwarden/backend/review/shadow_patcher.py`   [NEW]
+  - `archwarden/backend/api/routes_remediate.py`    [NEW]
+  - `archwarden/frontend/src/app/page.tsx`          [UPGRADE]
+
+DETAILED INSTRUCTIONS:
+
+1. Nemotron AI Code Remediation Engine (`nemotron_remediator.py`):
+   - Connect to Nebius Token Factory / NVIDIA NIM API (`nvidia/nemotron-super-49b-v1` or `nemotron-4-340b-instruct`).
+   - Endpoint `POST /review/remediate`:
+     Input: `{ violation_id, principle_statement, file_path, code_snippet, fix_hint }`
+     Task: Nemotron synthesizes an exact unified git patch (`.patch`) to remediate the violation:
+       - For P-001 (direct DB query): Replaces direct SQL query with an API client call.
+       - For P-004 (dual-write): Wraps DB write and event emission in transactional outbox.
+       - For P-005 (no timeout): Adds explicit `timeout=5.0` to HTTP client calls.
+     Output: `{ patch: string, explanation: string }`
+
+2. FalkorDB Shadow Graph Verification (`shadow_patcher.py`):
+   - Lifecycle:
+     1. Clone head graph: `base_store.copy_graph(head_graph_name, shadow_graph_name)`.
+     2. Apply the simulated fix into the shadow graph (e.g. remove cross-service ACCESSES edge, 
+        or set `has_timeout = true` on the ClientCall node).
+     3. Re-run `run_principles(shadow_store)`.
+     4. Assert:
+        - The target violation count drops from 1 to 0.
+        - No new secondary violations or cycles are introduced.
+     5. Delete shadow graph (`base_store.delete_graph(shadow_graph_name)`).
+     6. Return verification proof:
+        `{ verified: true, original_violations: 1, shadow_violations: 0 }`
+
+3. Frontend Interactive Visual Diff & Remediation Studio (`page.tsx`):
+   - Add a "✨ Auto-Remediate with Nemotron" button on each violation card.
+   - When clicked:
+     * Calls `POST /review/remediate`.
+     * Displays a side-by-side or unified code diff viewer with syntax highlighting (green additions, red removals).
+     * Displays a live verification badge:
+       "🛡️ Verified on FalkorDB Shadow Graph: Violations reduced from 1 to 0 with 0 regressions."
+     * Includes a "Copy Patch" or "Download .patch" button.
+
+TEST CASES CHITRAKSHI MUST IMPLEMENT & PASS:
+  - [Test-Chitrakshi-1]: Trigger remediation for P-005 (missing timeout); verify Nemotron 
+                         returns a valid diff adding `timeout=5.0`.
+  - [Test-Chitrakshi-2]: Test Shadow Graph lifecycle: ensure `GRAPH.COPY` clones head graph, 
+                         applies simulated node change, confirms 0 violations, and cleans up shadow graph cleanly.
+  - [Test-Chitrakshi-3]: Validate that if an AI fix introduces a cycle, the shadow graph 
+                         catches the new cycle and marks `verified: false`.
+  - [Test-Chitrakshi-4]: Frontend UI opens the diff modal, displays the Nemotron response, 
+                         and renders the shadow verification checkmark.
+
+================================================================================
+SECTION 5: INTEGRATION PLAN & 3-MINUTE DEMO VIDEO STRUCTURE
+================================================================================
+
+HOW THE 3 PARTS ASSEMBLE FOR THE DEMO:
+
+[0:00 - 0:45] ARYA: THE INTERCEPTION & DEVELOPER EXPERIENCE
+  - Show developer working in terminal and running `git push`.
+  - The `guardian pre-push` hook intercepts the push in 200ms.
+  - Displays the architecture check failure in CLI and links to the GitHub PR.
+  - Show the GitHub Action bot automatically commenting on the PR.
+
+[0:46 - 1:45] ALEKHYA: GRAPH MAPPING & BLAST RADIUS DISCOVERY
+  - Switch to Next.js dashboard at `http://localhost:3001`.
+  - Show the interactive D3 knowledge graph of microservices (Python + TypeScript).
+  - Demonstrate a developer deleting a route or altering a contract.
+  - Watch the blast radius calculation highlight all 3 downstream affected services in red.
+
+[1:46 - 3:00] CHITRAKSHI: NVIDIA NEMOTRON AI REMEDIATION & SHADOW VERIFICATION
+  - Click on the violation in the dashboard.
+  - Click "Auto-Remediate with Nemotron".
+  - Show Nemotron generating the precise unified diff patch on screen.
+  - Show FalkorDB branching a shadow graph (`GRAPH.COPY`) in real-time.
+  - Green banner lights up: "Shadow Graph Verified: 0 Regressions, 100% Architecture Compliant".
+  - Wrap up with architecture slide highlighting Nebius Token Factory & NVIDIA NIM.
+
+================================================================================
+SECTION 6: SUBMISSION CHECKLIST (OFFICIAL RULES COMPLIANCE)
+================================================================================
+  [X] Public GitHub repo with open-source license (MIT in LICENSE file).
+  [X] Comprehensive README with setup instructions and Docker Compose commands.
+  [X] Highlight NVIDIA Nemotron models (Nano, Super, Ultra) and Nebius integration.
+  [X] Working application locally with Docker (`docker compose up -d`).
+  [ ] 3-minute public YouTube video link.
+  [ ] Written feedback on Nebius Token Factory & NVIDIA NIM tools.
+================================================================================
