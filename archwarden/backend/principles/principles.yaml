@@ -1,0 +1,102 @@
+# Archwarden — Confirmed Architecture Principles
+# Format: id, statement, kind, severity, scope, check (language + query), evidence, status, source, fix_hint
+
+- id: P-001
+  statement: "A service never reads or writes another service's database tables directly."
+  kind: graph
+  severity: high
+  scope: system
+  check:
+    language: cypher
+    query: |
+      MATCH (a:Service)-[:CONTAINS*1..3]->(:Symbol)-[x:ACCESSES]->(t:Table)<-[:OWNS_TABLE]-(b:Service)
+      WHERE a.name <> b.name
+      RETURN a.name AS from_service, b.name AS owner_service,
+             t.name AS table, x.mode AS mode, x.evidence AS evidence
+  evidence:
+    support: 41
+    total: 41
+    baseline_violations: 0
+  status: confirmed
+  source: adr
+  fix_hint: "Call the owning service's HTTP/gRPC API instead of querying its table directly."
+
+- id: P-002
+  statement: "No synchronous call cycles between services."
+  kind: graph
+  severity: high
+  scope: system
+  check:
+    language: cypher
+    query: |
+      MATCH p=(a:Service)-[:CALLS*2..6]->(a)
+      RETURN [n IN nodes(p) | n.name] AS cycle_path
+      LIMIT 25
+  evidence:
+    support: 38
+    total: 38
+    baseline_violations: 0
+  status: confirmed
+  source: adr
+  fix_hint: "Introduce an async queue or break the cycle by moving one call to an event."
+
+- id: P-003
+  statement: "Synchronous call chains must not exceed 3 hops."
+  kind: graph
+  severity: medium
+  scope: system
+  check:
+    language: cypher
+    query: |
+      MATCH p=(a:Service)-[:CALLS*4..8]->(b:Service)
+      WHERE ALL(r IN relationships(p) WHERE r.via IN ['http', 'grpc'])
+      RETURN [n IN nodes(p) | n.name] AS deep_chain, length(p) AS depth
+      LIMIT 25
+  evidence:
+    support: 35
+    total: 35
+    baseline_violations: 0
+  status: confirmed
+  source: adr
+  fix_hint: "Introduce an aggregator service or switch inner hops to async messaging."
+
+- id: P-004
+  statement: "A handler must not write to a database table and produce to a topic in the same transaction without an outbox pattern."
+  kind: graph
+  severity: medium
+  scope: system
+  check:
+    language: cypher
+    query: |
+      MATCH (s:Service)-[:CONTAINS*1..2]->(sym:Symbol)-[w:ACCESSES {mode: 'write'}]->(t:Table),
+            (sym)-[p:PRODUCES]->(top:Topic)
+      WHERE NOT (s)-[:CONTAINS*1..2]->(:Symbol)-[:ACCESSES {mode: 'write'}]->(:Table {name: 'outbox'})
+      RETURN s.name AS service, sym.qname AS handler, t.name AS table,
+             top.name AS topic, sym.file AS file, sym.line AS line
+  evidence:
+    support: 22
+    total: 22
+    baseline_violations: 0
+  status: confirmed
+  source: adr
+  fix_hint: "Write to an outbox table in the same DB transaction, then relay events asynchronously."
+
+- id: P-005
+  statement: "All outbound HTTP/gRPC calls must have an explicit timeout."
+  kind: graph
+  severity: medium
+  scope: system
+  check:
+    language: cypher
+    query: |
+      MATCH (s:Service)-[:CONTAINS*1..3]->(sym:Symbol)-[:MAKES_CALL]->(cc:ClientCall)
+      WHERE cc.has_timeout = false
+      RETURN s.name AS service, sym.qname AS caller, cc.target_hint AS target,
+             cc.file AS file, cc.line AS line
+  evidence:
+    support: 30
+    total: 30
+    baseline_violations: 0
+  status: confirmed
+  source: adr
+  fix_hint: "Add a timeout parameter to all HTTP client calls (e.g. httpx.get(url, timeout=5.0))."
