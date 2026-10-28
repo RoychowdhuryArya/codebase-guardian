@@ -14,9 +14,20 @@ Services:
 from __future__ import annotations
 
 from graph.store_protocol import GraphStore
+from graph.memory_store import MemoryGraphStore
 
 
 def seed(store: GraphStore) -> None:
+
+    if isinstance(store, MemoryGraphStore):
+        print("[Seed] Using native in-memory graph seeder...")
+        _seed_memory_graph(store)
+        print(
+            f"[Seed] Memory graph created: "
+            f"{store.node_count()} nodes, {store.edge_count()} edges"
+        )
+        return
+
     print("[Seed] Seeding demo graph with 6 services and architecture violations...")
 
     # ── Services ───────────────────────────────────────────────────────────────
@@ -224,3 +235,117 @@ def _create_calls(store: GraphStore, from_svc: str, to_svc: str, via: str) -> No
         """,
         {"from_svc": from_svc, "to_svc": to_svc, "via": via},
     )
+
+def _seed_memory_graph(store: MemoryGraphStore) -> None:
+    """Populate the offline graph using native NetworkX helpers."""
+    services = [
+        "api-gateway",
+        "order-service",
+        "payment-service",
+        "inventory-service",
+        "shipping-service",
+        "notification-service",
+    ]
+
+    for name in services:
+        store.add_node("Service", {
+            "name": name,
+            "kind": "service",
+            "language": "python",
+            "path": f"services/{name}",
+        })
+
+    tables = [
+        ("orders", "order-service"),
+        ("payments", "payment-service"),
+        ("inventory", "inventory-service"),
+        ("shipments", "shipping-service"),
+        ("outbox", "order-service"),
+    ]
+
+    for table_name, owner in tables:
+        store.add_node("Table", {"name": table_name})
+        store.add_edge(owner, table_name, "OWNS_TABLE")
+
+    for topic_name in (
+        "order.created",
+        "payment.processed",
+        "shipment.dispatched",
+    ):
+        store.add_node("Topic", {"name": topic_name})
+
+    symbols = [
+        ("order-service::checkout.create_order", "order-service"),
+        ("order-service::db.read_payments_table", "order-service"),
+        ("payment-service::processor.charge", "payment-service"),
+        ("payment-service::fraud.check_inventory", "payment-service"),
+        ("inventory-service::stock.reserve", "inventory-service"),
+        ("inventory-service::stock.update_shipment", "inventory-service"),
+        ("shipping-service::dispatch.create_shipment", "shipping-service"),
+        ("shipping-service::dispatch.check_inventory_stock", "shipping-service"),
+    ]
+
+    for qname, service in symbols:
+        store.add_node("Symbol", {
+            "qname": qname,
+            "service": service,
+        })
+
+    # P-001: order-service accesses another service's payments table.
+    store.add_edge(
+        "order-service::db.read_payments_table",
+        "payments",
+        "ACCESSES",
+        {"mode": "read", "evidence": "order-service/checkout.py:45"},
+    )
+
+    # P-004: checkout writes to orders and publishes an event.
+    store.add_edge(
+        "order-service::checkout.create_order",
+        "orders",
+        "ACCESSES",
+        {"mode": "write", "evidence": "order-service/checkout.py:28"},
+    )
+    store.add_edge(
+        "order-service::checkout.create_order",
+        "order.created",
+        "PRODUCES",
+    )
+
+    # P-005: outbound client calls without a timeout.
+    for service, target, path in [
+        ("order-service", "payment-service", "/charge"),
+        ("payment-service", "inventory-service", "/reserve"),
+    ]:
+        call_id = f"{service}:{path}"
+        store.add_node("ClientCall", {
+            "name": call_id,
+            "service": service,
+            "target_hint": target,
+            "path": path,
+            "method": "POST",
+            "file": f"{service}/main.py",
+            "line": 1,
+            "has_timeout": False,
+        })
+        caller = (
+            "order-service::checkout.create_order"
+            if service == "order-service"
+            else "payment-service::fraud.check_inventory"
+        )
+        store.add_edge(caller, call_id, "MAKES_CALL")
+        store.add_edge(call_id, target, "RESOLVES_TO")
+
+    # P-002: shipping and inventory call each other.
+    # P-003: the gateway-to-notification chain is four hops.
+    calls = [
+        ("api-gateway", "order-service"),
+        ("order-service", "payment-service"),
+        ("payment-service", "inventory-service"),
+        ("inventory-service", "notification-service"),
+        ("shipping-service", "inventory-service"),
+        ("inventory-service", "shipping-service"),
+    ]
+
+    for source, target in calls:
+        store.add_edge(source, target, "CALLS", {"via": "http", "count": 1})

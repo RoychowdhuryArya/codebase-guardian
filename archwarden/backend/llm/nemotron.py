@@ -59,6 +59,7 @@ class NemotronClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 stream=False,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             return resp.choices[0].message.content or ""
         except Exception as e:

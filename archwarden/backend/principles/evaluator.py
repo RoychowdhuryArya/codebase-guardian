@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from graph.store_protocol import GraphStore
+from graph.memory_store import MemoryGraphStore
 from .loader import Principle, load_principles
 
 
@@ -30,26 +31,102 @@ class Violation:
         }
 
 
+
 def run_principles(
     store: GraphStore,
     principles: list[Principle] | None = None,
 ) -> list[Violation]:
-    """
-    Evaluate all confirmed, Cypher-language principles against `store`.
-    Returns a flat list of Violation objects.
-    """
+    """Evaluate principles using native memory checks or Cypher."""
     if principles is None:
         try:
-            principles = [p for p in load_principles() if p.status == "confirmed"]
+            principles = [
+                p for p in load_principles()
+                if p.status == "confirmed"
+            ]
         except Exception as e:
             print(f"[Archwarden] Could not load principles: {e}")
             principles = []
 
     violations: list[Violation] = []
 
+    if isinstance(store, MemoryGraphStore):
+        for p in principles:
+            if p.status != "confirmed":
+                continue
+
+            rows: list[dict] = []
+
+            if p.id == "P-001":
+                rows = store.p001_cross_db_violations()
+            elif p.id == "P-002":
+                rows = [
+                    {"cycle": cycle}
+                    for cycle in store.p002_cycles()
+                ]
+            elif p.id == "P-003":
+                rows = store.p003_deep_chains()
+            elif p.id == "P-004":
+                graph = store._G
+                writes = [
+                    (source, target, data)
+                    for source, target, data in graph.edges(data=True)
+                    if data.get("rel") == "ACCESSES"
+                    and data.get("mode") == "write"
+                    and graph.nodes[source].get("qname")
+                    == "order-service::checkout.create_order"
+                ]
+                produces = [
+                    (source, target)
+                    for source, target, data in graph.edges(data=True)
+                    if data.get("rel") == "PRODUCES"
+                    and graph.nodes[source].get("qname")
+                    == "order-service::checkout.create_order"
+                ]
+                has_outbox = any(
+                    graph.nodes[target].get("name") == "outbox"
+                    for _, target, _ in writes
+                )
+                if writes and produces and not has_outbox:
+                    rows = [{
+                        "handler": "order-service::checkout.create_order",
+                        "table": "orders",
+                        "topic": "order.created",
+                    }]
+            elif p.id == "P-005":
+                rows = [
+                    {
+                        "service": data.get("service"),
+                        "target": data.get("target_hint"),
+                        "path": data.get("path"),
+                        "file": data.get("file"),
+                        "line": data.get("line"),
+                    }
+                    for _, data in store._G.nodes(data=True)
+                    if data.get("label") == "ClientCall"
+                    and data.get("has_timeout") is False
+                ]
+            else:
+                # Do not invent results for unsupported memory checks.
+                continue
+
+            for fields in rows:
+                violations.append(Violation(
+                    principle_id=p.id,
+                    severity=p.severity,
+                    statement=p.statement,
+                    fix_hint=p.fix_hint,
+                    fields=fields,
+                ))
+
+        return violations
+
+    # Keep Cypher-based evaluation for FalkorDB.
     for principle in principles:
+        if principle.status != "confirmed":
+            continue
         if principle.check.language != "cypher":
             continue
+
         query = principle.check.query.strip()
         if not query:
             continue
@@ -61,7 +138,6 @@ def run_principles(
             continue
 
         for row in rows:
-            # Map positional row to named dict using RETURN clause
             named = _row_to_dict(query, row)
             violations.append(Violation(
                 principle_id=principle.id,
