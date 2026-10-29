@@ -11,7 +11,8 @@ from typing import Optional
 from graph.falkor_store import FalkorGraphStore
 from graph.store_protocol import GraphStore
 from ingest.repo_walker import ingest_repo
-from ingest.diff_linker import diff_to_services
+from ingest.diff_linker import diff_to_services, parse_unified_diff
+from ingest.breaking_changes import analyze_breaking_changes
 from principles.evaluator import run_principles, delta_violations, Violation
 from principles.loader import load_principles
 
@@ -63,9 +64,10 @@ def review_pr(
     2. Re-ingest only the touched services into head
     3. Run principles on both base and head
     4. Compute delta (new violations only)
-    5. Compute blast radius
-    6. Generate summary
-    7. Clean up head graph
+    5. P-006: Breaking API contract analysis
+    6. Compute blast radius
+    7. Generate summary
+    8. Clean up head graph
     """
     t0 = time.time()
     head_graph_name = f"archwarden_head_{pr_id.replace('/', '_').replace('#', '')}"
@@ -96,6 +98,34 @@ def review_pr(
 
         # ── 5. Compute delta (new violations only) ────────────────────────────
         new_violations = delta_violations(base_violations, head_violations)
+
+        # ── 5b. P-006: Breaking API contract analysis ────────────────────────
+        if diff_text:
+            try:
+                diff_hunks = parse_unified_diff(diff_text)
+                breaking_violations = analyze_breaking_changes(
+                    diff_hunks, head_store,
+                    service_name=touched[0] if touched else "",
+                )
+                for bv in breaking_violations:
+                    new_violations.append(Violation(
+                        principle_id=bv.rule_id,
+                        severity=bv.severity,
+                        statement=f"Breaking API change ({bv.kind}): {bv.old_method} {bv.old_path}",
+                        fix_hint="Preserve the previous route/method, deprecate gracefully, or update all calling services.",
+                        fields={
+                            "kind": bv.kind,
+                            "old_method": bv.old_method,
+                            "old_path": bv.old_path,
+                            "new_method": bv.new_method,
+                            "new_path": bv.new_path,
+                            "changed_in_service": bv.changed_in_service,
+                            "broken_service": bv.broken_service,
+                            "service": bv.changed_in_service,
+                        },
+                    ))
+            except Exception as e:
+                print(f"[PR Review] P-006 analysis error: {e}")
 
         # ── 6. Compute blast radius (k-hop CALLS reachability) ────────────────
         blast = _blast_radius(head_store, touched, k_hops)
@@ -180,5 +210,5 @@ def _build_summary(
             lines.append(f"  > Fix: {v.fix_hint}")
     else:
         lines.append("")
-        lines.append("✅ No new architecture violations detected.")
+        lines.append("No new architecture violations detected.")
     return "\n".join(lines)

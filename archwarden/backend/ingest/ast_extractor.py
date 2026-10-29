@@ -1,6 +1,8 @@
 """
 Archwarden — Python AST Code Graph Extractor
 Parses a multi-service repo into Service/File/Symbol/Route/ClientCall/Table nodes.
+
+Upgraded: now also handles TypeScript/JavaScript files via ts_extractor.py
 """
 from __future__ import annotations
 
@@ -214,3 +216,21 @@ class ArchwardenASTVisitor(ast.NodeVisitor):
             if kw.arg in ("topic", "channel") and isinstance(kw.value, ast.Constant):
                 return str(kw.value.value)
         return None
+
+
+# ── TypeScript extraction (delegated to ts_extractor) ────────────────────────
+
+
+def extract_ts_nodes(
+    file_path: str,
+    service_name: str,
+    source: str,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Delegate TypeScript/JavaScript extraction to TSExtractor.
+    Returns (routes, client_calls).
+    """
+    from .ts_extractor import TSExtractor
+    extractor = TSExtractor(file_path, service_name)
+    extractor.extract(source)
+    return extractor.routes, extractor.client_calls
