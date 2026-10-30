@@ -72,56 +72,85 @@ const getColor = (label: string) => LABEL_COLORS[label] || '#888';
 
 function Sidebar({ active, onNav }: { active: string; onNav: (p: string) => void }) {
   const items = [
-    { id: 'dashboard', icon: '⬡', label: 'Dashboard' },
-    { id: 'graph', icon: '◎', label: 'Graph View' },
-    { id: 'audit', icon: '⚑', label: 'Audit' },
-    { id: 'review', icon: '⤳', label: 'PR Review' },
-    { id: 'principles', icon: '⊛', label: 'Principles' },
+    { id: 'dashboard', icon: '⬡', label: 'Dashboard', desc: 'Overview' },
+    { id: 'graph',     icon: '◎', label: 'Graph',     desc: 'D3 visualization' },
+    { id: 'audit',    icon: '⚑', label: 'Audit',     desc: 'Violations' },
+    { id: 'review',   icon: '⤳', label: 'PR Review', desc: 'Diff analysis' },
+    { id: 'principles', icon: '⊛', label: 'Principles', desc: 'Nemotron mining' },
   ];
 
   return (
-    <aside style={{
-      width: 220,
-      background: 'var(--bg-secondary)',
-      borderRight: '1px solid var(--border)',
-      display: 'flex',
-      flexDirection: 'column',
-      padding: '0 12px',
-      flexShrink: 0,
-    }}>
-      {/* Logo */}
-      <div style={{ padding: '24px 8px 32px', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div className="animate-spin-slow" style={{ fontSize: 28, lineHeight: 1 }}>⬡</div>
+    <aside
+      role="navigation"
+      aria-label="Main navigation"
+      style={{
+        width: 228,
+        background: 'var(--bg-secondary)',
+        borderRight: '1px solid var(--border)',
+        display: 'flex',
+        flexDirection: 'column',
+        padding: '0 10px',
+        flexShrink: 0,
+      }}
+    >
+      {/* Brand */}
+      <div style={{ padding: '22px 10px 24px', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+          <div
+            className="animate-spin-slow"
+            style={{
+              width: 36, height: 36,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRadius: 10,
+              background: 'linear-gradient(135deg, rgba(94,207,255,0.15), rgba(180,158,255,0.1))',
+              border: '1px solid rgba(94,207,255,0.2)',
+              fontSize: 20,
+            }}
+            aria-hidden="true"
+          >⬡</div>
           <div>
-            <div style={{ fontSize: '1.1rem', fontWeight: 700, letterSpacing: '-0.02em' }}
+            <div style={{ fontSize: '1.05rem', fontWeight: 800, letterSpacing: '-0.025em' }}
                  className="grad-cyan-violet">Archwarden</div>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)', marginTop: 2 }}>
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-dim)', marginTop: 1, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
               Architecture Guard
             </div>
           </div>
         </div>
       </div>
 
-      {/* Nav */}
-      <nav style={{ flex: 1, paddingTop: 16 }}>
+      {/* Nav links */}
+      <nav style={{ flex: 1, paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 3 }}>
         {items.map(item => (
-          <div key={item.id} className={`nav-item ${active === item.id ? 'active' : ''}`}
-               onClick={() => onNav(item.id)}>
-            <span style={{ fontSize: 16 }}>{item.icon}</span>
-            {item.label}
+          <div
+            key={item.id}
+            className={`nav-item ${active === item.id ? 'active' : ''}`}
+            onClick={() => onNav(item.id)}
+            role="button"
+            tabIndex={0}
+            aria-current={active === item.id ? 'page' : undefined}
+            onKeyDown={e => e.key === 'Enter' && onNav(item.id)}
+          >
+            <span style={{ fontSize: 15, opacity: active === item.id ? 1 : 0.6 }} aria-hidden="true">{item.icon}</span>
+            <div>
+              <div>{item.label}</div>
+              {active !== item.id && (
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-dim)', marginTop: 1 }}>{item.desc}</div>
+              )}
+            </div>
           </div>
         ))}
       </nav>
 
-      {/* Footer */}
-      <div style={{ padding: '16px 8px', borderTop: '1px solid var(--border)' }}>
-        <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
-          Powered by
-        </div>
-        <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.7rem', color: 'var(--nvidia-green)', fontWeight: 600 }}>NVIDIA</span>
-          <span style={{ fontSize: '0.7rem', color: 'var(--accent-cyan)', fontWeight: 600 }}>FalkorDB</span>
+      {/* Footer branding */}
+      <div style={{ padding: '14px 10px 32px', borderTop: '1px solid var(--border)' }}>
+        <div className="section-label" style={{ marginBottom: 10 }}>Powered by</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div className="pill pill-green" style={{ fontSize: '0.68rem', justifyContent: 'center' }}>
+            ⬡ NVIDIA Nemotron
+          </div>
+          <div className="pill pill-cyan" style={{ fontSize: '0.68rem', justifyContent: 'center' }}>
+            ◎ FalkorDB OpenCypher
+          </div>
         </div>
       </div>
     </aside>
@@ -130,16 +159,18 @@ function Sidebar({ active, onNav }: { active: string; onNav: (p: string) => void
 
 // ── Stat Card ──────────────────────────────────────────────────────────────
 
-function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
+function StatCard({ label, value, sub, color, icon }: { label: string; value: string | number; sub?: string; color?: string; icon?: string }) {
   return (
-    <div className="stat-card animate-fade-in">
-      <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
-        {label}
+    <div className="stat-card animate-fade-up" role="region" aria-label={`${label}: ${value}`}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div className="section-label">{label}</div>
+        {icon && <span style={{ fontSize: 18, opacity: 0.5 }} aria-hidden="true">{icon}</span>}
       </div>
-      <div style={{ fontSize: '2rem', fontWeight: 700, color: color || 'var(--text-primary)', lineHeight: 1 }}>
+      <div style={{ fontSize: '2.1rem', fontWeight: 800, color: color || 'var(--text-primary)', lineHeight: 1, letterSpacing: '-0.03em' }}
+           className="animate-count-up">
         {value}
       </div>
-      {sub && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: 8 }}>{sub}</div>}
     </div>
   );
 }
@@ -239,23 +270,20 @@ function ViolationCard({ v, index }: { v: Violation; index: number }) {
 
           <button
             type="button"
+            className="btn btn-primary"
             onClick={(event) => {
               event.stopPropagation();
               handleRemediate();
             }}
             disabled={remediating}
-            style={{
-              marginTop: 12,
-              padding: '10px 16px',
-              borderRadius: 8,
-              border: '1px solid var(--accent-cyan)',
-              background: 'var(--bg-primary)',
-              color: 'var(--accent-cyan)',
-              cursor: remediating ? 'wait' : 'pointer',
-              fontWeight: 600,
-            }}
+            aria-label={remediating ? 'Generating AI patch…' : 'Auto-remediate this violation with Nemotron AI'}
+            style={{ marginTop: 14 }}
           >
-            {remediating ? 'Generating patch...' : '✨ Auto-Remediate with Nemotron'}
+            {remediating ? (
+              <><span style={{ display: 'inline-block', animation: 'spin-slow 1s linear infinite' }}>⟳</span> Generating patch…</>
+            ) : (
+              '✨ Auto-Remediate with Nemotron'
+            )}
           </button>
 
         </div>
@@ -263,172 +291,151 @@ function ViolationCard({ v, index }: { v: Violation; index: number }) {
 
       {showRemediation && (
         <div
+          className="modal-overlay"
           onClick={(event) => event.stopPropagation()}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 1000,
-            background: 'rgba(0,0,0,0.75)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 20,
-          }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Nemotron AI Remediation"
         >
-          <div style={{
-            background: 'var(--bg-primary)',
-            border: '1px solid var(--border)',
-            borderRadius: 14,
-            padding: 24,
-            width: '100%',
-            maxWidth: 760,
-            maxHeight: '85vh',
-            overflowY: 'auto',
-            color: 'var(--text-primary)',
-          }}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: 12,
-              marginBottom: 18,
-            }}>
-              <h2 style={{ fontSize: '1.1rem', margin: 0 }}>
-                Nemotron AI Remediation
-              </h2>
+          <div className="modal-panel" style={{ padding: '28px 32px' }}>
+            {/* Modal header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 22 }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                  <span style={{ fontSize: 20 }} aria-hidden="true">✨</span>
+                  <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0 }}>Nemotron AI Remediation</h2>
+                </div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>
+                  Violation <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent-cyan)' }}>[{v.principle_id}]</span>
+                </div>
+              </div>
               <button
                 type="button"
+                className="btn btn-ghost"
                 onClick={() => setShowRemediation(false)}
-                style={{ padding: '6px 10px', cursor: 'pointer' }}
+                aria-label="Close remediation modal"
+                style={{ padding: '6px 12px', fontSize: '0.8rem' }}
               >
                 ✕ Close
               </button>
             </div>
 
-            <label style={{ display: 'block', marginBottom: 6 }}>
+            <div className="divider" style={{ margin: '0 0 20px' }} />
+
+            <label htmlFor="rem-filepath" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 6, fontWeight: 600 }}>
               File path
             </label>
             <input
+              id="rem-filepath"
+              className="input"
               value={filePath}
               onChange={(event) => setFilePath(event.target.value)}
               placeholder="e.g. services/orders.py"
-              style={{
-                width: '100%',
-                padding: 10,
-                marginBottom: 14,
-                borderRadius: 6,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-primary)',
-                color: 'var(--text-primary)',
-              }}
+              style={{ marginBottom: 14 }}
             />
 
-            <label style={{ display: 'block', marginBottom: 6 }}>
+            <label htmlFor="rem-snippet" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 6, fontWeight: 600 }}>
               Code snippet
             </label>
             <textarea
+              id="rem-snippet"
+              className="input"
               value={codeSnippet}
               onChange={(event) => setCodeSnippet(event.target.value)}
-              placeholder="Paste the relevant code here"
+              placeholder="Paste the relevant code here…"
               rows={5}
-              style={{
-                width: '100%',
-                padding: 10,
-                marginBottom: 14,
-                borderRadius: 6,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-primary)',
-                color: 'var(--text-primary)',
-                fontFamily: 'monospace',
-                resize: 'vertical',
-              }}
+              style={{ marginBottom: 16, fontFamily: 'JetBrains Mono, monospace', resize: 'vertical' }}
             />
 
             <button
               type="button"
+              className="btn btn-primary"
               onClick={handleRemediate}
               disabled={remediating || !filePath.trim() || !codeSnippet.trim()}
-              style={{
-                padding: '10px 16px',
-                borderRadius: 8,
-                border: 0,
-                background: 'var(--accent-cyan)',
-                color: '#111',
-                fontWeight: 700,
-                cursor: remediating ? 'wait' : 'pointer',
-              }}
+              aria-label={remediating ? 'Generating patch' : 'Generate remediation patch'}
             >
-              {remediating ? 'Generating patch...' : 'Generate / Retry Patch'}
+              {remediating ? '⟳ Generating patch…' : '⚡ Generate / Retry Patch'}
             </button>
 
             {remediationError && (
-              <p style={{ color: '#f87171', marginTop: 14 }}>
-                {remediationError}
-              </p>
+              <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8,
+                background: 'rgba(255,107,107,0.08)', border: '1px solid rgba(255,107,107,0.22)',
+                color: 'var(--accent-red)', fontSize: '0.85rem' }}>
+                ⚠ {remediationError}
+              </div>
             )}
 
             {remediation && (
-              <div style={{ marginTop: 20 }}>
-                <h3 style={{ fontSize: '1rem' }}>Explanation</h3>
-                <p style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  {remediation.explanation}
-                </p>
+              <div style={{ marginTop: 24 }} className="animate-fade-up">
+                {/* Explanation */}
+                <div style={{ marginBottom: 20 }}>
+                  <div className="section-label" style={{ marginBottom: 8 }}>AI Explanation</div>
+                  <p style={{ color: 'var(--text-muted)', lineHeight: 1.7, fontSize: '0.9rem' }}>
+                    {remediation.explanation}
+                  </p>
+                </div>
 
-                <h3 style={{ fontSize: '1rem', marginTop: 18 }}>
-                  Proposed patch
-                </h3>
-                <pre style={{
-                  padding: 14,
-                  borderRadius: 8,
-                  background: 'var(--bg-primary)',
-                  border: '1px solid var(--border)',
-                  overflowX: 'auto',
-                  whiteSpace: 'pre-wrap',
-                  overflowWrap: 'anywhere',
-                  fontSize: '0.8rem',
-                }}>
-                  {remediation.patch
-                    ? remediation.patch.split('\n').map((line, i) => (
-                        <span
-                          key={i}
-                          style={{
-                            display: 'block',
-                            color: line.startsWith('+') && !line.startsWith('+++')
-                              ? '#4ade80'
-                              : line.startsWith('-') && !line.startsWith('---')
-                                ? '#f87171'
-                                : 'var(--text-muted)',
-                          }}
-                        >
-                          {line}
-                        </span>
-                      ))
-                    : 'No patch was returned. Review the explanation above.'}
-                </pre>
+                {/* Patch diff */}
+                <div style={{ marginBottom: 16 }}>
+                  <div className="section-label" style={{ marginBottom: 8 }}>Proposed Patch</div>
+                  <pre style={{
+                    padding: '16px 18px',
+                    borderRadius: 10,
+                    background: '#050510',
+                    border: '1px solid var(--border)',
+                    borderLeft: '3px solid var(--accent-violet)',
+                    overflowX: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                    fontSize: '0.78rem',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    lineHeight: 1.7,
+                    maxHeight: 320,
+                    overflowY: 'auto',
+                  }}>
+                    {remediation.patch
+                      ? remediation.patch.split('\n').map((line, i) => (
+                          <span
+                            key={i}
+                            style={{
+                              display: 'block',
+                              color: line.startsWith('+') && !line.startsWith('+++')
+                                ? 'var(--accent-green)'
+                                : line.startsWith('-') && !line.startsWith('---')
+                                  ? 'var(--accent-red)'
+                                  : 'var(--text-dim)',
+                              background: line.startsWith('+') && !line.startsWith('+++')
+                                ? 'rgba(61,224,122,0.04)'
+                                : line.startsWith('-') && !line.startsWith('---')
+                                  ? 'rgba(255,107,107,0.04)'
+                                  : 'transparent',
+                              paddingLeft: 4,
+                            }}
+                          >
+                            {line || '\u00a0'}
+                          </span>
+                        ))
+                      : <span style={{ color: 'var(--text-dim)' }}>No patch returned. Review the explanation above.</span>}
+                  </pre>
+                </div>
 
-                <div style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 10,
-                  marginTop: 12,
-                }}>
+                {/* Actions */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
                   <button
                     type="button"
+                    className="btn btn-ghost"
                     disabled={!remediation.patch}
-                    onClick={() => {
-                      void navigator.clipboard.writeText(remediation.patch);
-                    }}
-                    style={{ padding: '8px 12px', cursor: 'pointer' }}
+                    onClick={() => { void navigator.clipboard.writeText(remediation.patch); }}
+                    aria-label="Copy patch to clipboard"
                   >
-                    Copy patch
+                    📋 Copy Patch
                   </button>
                   <button
                     type="button"
+                    className="btn btn-ghost"
                     disabled={!remediation.patch}
                     onClick={() => {
-                      const blob = new Blob([remediation.patch], {
-                        type: 'text/x-diff',
-                      });
+                      const blob = new Blob([remediation.patch], { type: 'text/x-diff' });
                       const url = URL.createObjectURL(blob);
                       const link = document.createElement('a');
                       link.href = url;
@@ -436,31 +443,41 @@ function ViolationCard({ v, index }: { v: Violation; index: number }) {
                       link.click();
                       URL.revokeObjectURL(url);
                     }}
-                    style={{ padding: '8px 12px', cursor: 'pointer' }}
+                    aria-label="Download .patch file"
                   >
-                    Download .patch
+                    ⬇ Download .patch
                   </button>
                 </div>
 
+                {/* Shadow verification banner */}
                 <div style={{
-                  marginTop: 18,
-                  padding: 12,
-                  borderRadius: 8,
-                  border: '1px solid var(--border)',
+                  padding: '14px 18px',
+                  borderRadius: 10,
+                  border: `1px solid ${remediation.verification.verified ? 'rgba(61,224,122,0.3)' : 'rgba(255,107,107,0.25)'}`,
+                  background: remediation.verification.verified ? 'rgba(61,224,122,0.06)' : 'rgba(255,107,107,0.06)',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 12,
                 }}>
-                  <strong>
-                    {remediation.verification.verified
-                      ? '✓ Shadow verification passed'
-                      : '⚠ Not verified'}
-                  </strong>
-                  <p style={{
-                    marginBottom: 0,
-                    color: 'var(--text-muted)',
-                    fontSize: '0.85rem',
-                  }}>
-                    {remediation.verification.message ||
-                      'The backend has not confirmed verification.'}
-                  </p>
+                  <span style={{ fontSize: 22, flexShrink: 0 }}>
+                    {remediation.verification.verified ? '🛡️' : '⚠️'}
+                  </span>
+                  <div>
+                    <div style={{ fontWeight: 700, marginBottom: 4, color: remediation.verification.verified ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                      {remediation.verification.verified
+                        ? 'Shadow Graph Verified — Architecture Compliant'
+                        : 'Shadow Verification Inconclusive'}
+                    </div>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                      {remediation.verification.message || 'The backend has not confirmed verification.'}
+                    </div>
+                    {remediation.verification.original_violations != null && (
+                      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <span className="pill pill-red">Before: {remediation.verification.original_violations} violations</span>
+                        <span className="pill pill-green">After: {remediation.verification.shadow_violations ?? 0} violations</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -477,16 +494,21 @@ function ViolationCard({ v, index }: { v: Violation; index: number }) {
 function GraphView() {
   const svgRef = useRef<SVGSVGElement>(null);
   const [loading, setLoading] = useState(true);
+  const [graphData, setGraphData] = useState<GraphData | null>(null);
+  const [seeding, setSeeding] = useState(false);
 
   const loadGraph = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(`${API}/graph/graph-data`);
       const data: GraphData = await res.json();
+      setGraphData(data);
 
-      if (!svgRef.current || !data.nodes.length) return;
+      if (!svgRef.current) return;
       const svg = d3.select(svgRef.current);
       svg.selectAll('*').remove();
+
+      if (!data.nodes || !data.nodes.length) return;
 
       const w = svgRef.current.clientWidth || 800;
       const h = svgRef.current.clientHeight || 600;
@@ -580,28 +602,75 @@ function GraphView() {
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Graph Visualization</h2>
-        <button onClick={loadGraph}
-                style={{ marginLeft: 'auto', padding: '6px 14px', borderRadius: 8, fontSize: '0.8rem',
-                         background: 'rgba(118,227,255,0.08)', border: '1px solid var(--border)', color: 'var(--accent-cyan)', cursor: 'pointer' }}>
-          Refresh
+      {/* Header */}
+      <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12,
+                    background: 'rgba(13,13,24,0.8)', backdropFilter: 'blur(8px)' }}>
+        <span style={{ fontSize: 16, opacity: 0.7 }} aria-hidden="true">◎</span>
+        <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>Knowledge Graph</h2>
+        <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginLeft: 4 }}>— FalkorDB OpenCypher</span>
+        {graphData && graphData.nodes.length > 0 && (
+          <span className="pill pill-cyan" style={{ fontSize: '0.72rem', marginLeft: 8 }}>
+            {graphData.nodes.length} nodes · {graphData.edges.length} edges
+          </span>
+        )}
+        <button
+          className="btn btn-ghost"
+          onClick={loadGraph}
+          aria-label="Refresh graph"
+          style={{ marginLeft: 'auto', fontSize: '0.78rem', padding: '6px 12px' }}
+        >
+          ↺ Refresh
         </button>
       </div>
       {/* Legend */}
-      <div style={{ padding: '10px 24px', display: 'flex', gap: 12, flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
+      <div style={{ padding: '8px 24px', display: 'flex', gap: 8, flexWrap: 'wrap', borderBottom: '1px solid var(--border)',
+                    background: 'rgba(7,7,14,0.6)' }}>
         {Object.entries(LABEL_COLORS).map(([label, color]) => (
-          <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            <div style={{ width: 10, height: 10, borderRadius: '50%', background: color, opacity: 0.7 }} />
+          <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.72rem', color: 'var(--text-muted)',
+                                    padding: '3px 8px', borderRadius: 99,
+                                    background: `${color}10`, border: `1px solid ${color}28` }}>
+            <div style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
             {label}
           </div>
         ))}
       </div>
       {loading && (
         <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
-                      color: 'var(--accent-cyan)', fontSize: '0.9rem' }}>Loading graph…</div>
+                      color: 'var(--accent-cyan)', fontSize: '0.88rem', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ animation: 'spin-slow 1s linear infinite', display: 'inline-block' }}>⟳</span>
+          Rendering graph…
+        </div>
       )}
-      <div style={{ flex: 1, position: 'relative' }}>
+      {!loading && graphData && graphData.nodes.length === 0 && (
+        <div style={{
+          flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          gap: 16, padding: 40, textAlign: 'center'
+        }}>
+          <div style={{ fontSize: 48, opacity: 0.3 }}>◎</div>
+          <div style={{ fontSize: '1.1rem', fontWeight: 700 }}>No Graph Nodes Found</div>
+          <p style={{ color: 'var(--text-muted)', maxWidth: 460, margin: 0, fontSize: '0.88rem', lineHeight: 1.6 }}>
+            FalkorDB does not have graph topology loaded. Click below to seed the 6-service microservice demo graph with deliberate architecture violations.
+          </p>
+          <button
+            className="btn btn-primary"
+            disabled={seeding}
+            onClick={async () => {
+              setSeeding(true);
+              try {
+                await fetch(`${API}/graph/seed`, { method: 'POST' });
+                await loadGraph();
+              } catch (e) {
+                console.error(e);
+              } finally {
+                setSeeding(false);
+              }
+            }}
+          >
+            {seeding ? 'Seeding FalkorDB…' : 'Seed Demo Graph (6 Services)'}
+          </button>
+        </div>
+      )}
+      <div style={{ flex: 1, position: 'relative' }} role="img" aria-label="Interactive microservice dependency graph">
         <svg id="graph-svg" ref={svgRef} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>
@@ -634,23 +703,40 @@ function AuditView() {
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Architecture Audit</h2>
-        <div style={{ display: 'flex', gap: 6, marginLeft: 16 }}>
+      <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12,
+                    background: 'rgba(13,13,24,0.8)', backdropFilter: 'blur(8px)' }}>
+        <span style={{ fontSize: 16, opacity: 0.7 }} aria-hidden="true">⚑</span>
+        <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>Architecture Audit</h2>
+        <div style={{ display: 'flex', gap: 5, marginLeft: 12 }} role="group" aria-label="Filter by severity">
           {['all', 'high', 'medium', 'low'].map(f => (
-            <button key={f} onClick={() => setFilter(f)}
-                    style={{ padding: '4px 12px', borderRadius: 20, fontSize: '0.75rem', cursor: 'pointer',
-                             background: filter === f ? 'rgba(118,227,255,0.15)' : 'transparent',
-                             border: `1px solid ${filter === f ? 'var(--accent-cyan)' : 'var(--border)'}`,
-                             color: filter === f ? 'var(--accent-cyan)' : 'var(--text-muted)' }}>
-              {f.charAt(0).toUpperCase() + f.slice(1)}
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              aria-pressed={filter === f}
+              style={{
+                padding: '4px 12px', borderRadius: 99, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 600,
+                background: filter === f
+                  ? (f === 'high' ? 'rgba(255,107,107,0.15)' : f === 'medium' ? 'rgba(255,204,68,0.15)' : f === 'low' ? 'rgba(61,224,122,0.12)' : 'rgba(94,207,255,0.15)')
+                  : 'transparent',
+                border: `1px solid ${filter === f
+                  ? (f === 'high' ? 'rgba(255,107,107,0.35)' : f === 'medium' ? 'rgba(255,204,68,0.35)' : f === 'low' ? 'rgba(61,224,122,0.3)' : 'rgba(94,207,255,0.3)')
+                  : 'var(--border)'}`,
+                color: filter === f
+                  ? (f === 'high' ? 'var(--accent-red)' : f === 'medium' ? 'var(--accent-amber)' : f === 'low' ? 'var(--accent-green)' : 'var(--accent-cyan)')
+                  : 'var(--text-dim)',
+              }}
+            >
+              {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1)}
             </button>
           ))}
         </div>
-        <button onClick={runAudit} disabled={loading}
-                style={{ marginLeft: 'auto', padding: '6px 14px', borderRadius: 8, fontSize: '0.8rem',
-                         background: 'rgba(118,227,255,0.08)', border: '1px solid var(--border)',
-                         color: 'var(--accent-cyan)', cursor: 'pointer' }}>
+        <button
+          className="btn btn-ghost"
+          onClick={runAudit}
+          disabled={loading}
+          aria-label={loading ? 'Audit running' : 'Run architecture audit'}
+          style={{ marginLeft: 'auto', fontSize: '0.78rem', padding: '6px 14px' }}
+        >
           {loading ? '⟳ Running…' : '▶ Run Audit'}
         </button>
       </div>
@@ -963,38 +1049,50 @@ function DashboardView({ onNav }: { onNav: (p: string) => void }) {
   }, []);
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
+    <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px' }}>
       {/* Hero */}
-      <div style={{ marginBottom: 32 }}>
-        <h1 className="animate-fade-in" style={{ fontSize: '2rem', fontWeight: 800, margin: '0 0 8px',
-                                                  letterSpacing: '-0.03em' }}>
+      <div className="animate-fade-up" style={{ marginBottom: 28, position: 'relative' }}>
+        <div style={{
+          position: 'absolute', top: -10, left: -10, right: -10, bottom: -10,
+          background: 'radial-gradient(ellipse at 20% 50%, rgba(94,207,255,0.04) 0%, transparent 60%)',
+          pointerEvents: 'none',
+        }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <span className="pill pill-green" style={{ fontSize: '0.65rem' }}>● Live</span>
+          <span className="pill pill-violet" style={{ fontSize: '0.65rem' }}>NVIDIA × FalkorDB Hackathon 2026</span>
+        </div>
+        <h1 style={{ fontSize: '2.2rem', fontWeight: 900, margin: '8px 0 10px', letterSpacing: '-0.04em', lineHeight: 1.1 }}>
           Architecture <span className="grad-cyan-violet">Guardian</span>
         </h1>
-        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.95rem' }}>
-          FalkorDB graph-powered architecture governance · NVIDIA Nemotron principle mining
+        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.92rem', lineHeight: 1.7, maxWidth: 560 }}>
+          Graph-powered microservice governance using <strong style={{ color: 'var(--accent-cyan)' }}>FalkorDB OpenCypher</strong> + principle mining &amp; AI remediation via <strong style={{ color: 'var(--nvidia-green)' }}>NVIDIA Nemotron</strong>.
         </p>
       </div>
 
-      {/* Health status */}
+      {/* Health status bar */}
       {health && (
-        <div className="animate-fade-in" style={{ marginBottom: 24, padding: '12px 18px', borderRadius: 10,
-              display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'center',
-              background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+        <div className="glass animate-fade-up" style={{ marginBottom: 24, padding: '12px 20px',
+              display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'center' }}
+             role="status" aria-live="polite" aria-label="System health status">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%',
-                          background: health.status === 'ok' ? 'var(--accent-green)' : 'var(--accent-red)',
-                          boxShadow: `0 0 8px ${health.status === 'ok' ? 'var(--accent-green)' : 'var(--accent-red)'}` }} />
-            <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>
-              {health.engine === 'falkor' ? '⬡ FalkorDB' : '◈ Memory'} Connected
+            <div className={`status-dot ${health.status === 'ok' ? 'online' : 'offline'}`} />
+            <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>
+              {health.engine === 'falkor' ? '⬡ FalkorDB' : '◈ Memory'} {health.status === 'ok' ? 'Connected' : 'Disconnected'}
             </span>
           </div>
+          <div style={{ height: 16, width: 1, background: 'var(--border)' }} />
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            Graph: <span style={{ color: 'var(--accent-cyan)', fontFamily: 'monospace' }}>{health.graph}</span>
+            Graph: <span style={{ color: 'var(--accent-cyan)', fontFamily: 'JetBrains Mono, monospace', fontSize: '0.78rem' }}>{health.graph}</span>
           </div>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+          <div style={{ height: 16, width: 1, background: 'var(--border)' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            <div className={`status-dot ${health.llm_available ? 'online' : 'offline'}`} style={{ width: 6, height: 6, animation: 'none' }} />
             LLM: <span style={{ color: health.llm_available ? 'var(--accent-green)' : 'var(--accent-red)', fontWeight: 600 }}>
-              {health.llm_available ? '✓ Nemotron Ready' : '✗ No API Key'}
+              {health.llm_available ? 'Nemotron Ready' : 'No API Key'}
             </span>
+          </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>{health.nodes} nodes · {health.edges} edges</span>
           </div>
         </div>
       )}
@@ -1005,11 +1103,11 @@ function DashboardView({ onNav }: { onNav: (p: string) => void }) {
           {[...Array(4)].map((_, i) => <div key={i} className="skeleton" style={{ height: 100 }} />)}
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 28 }}>
-          <StatCard label="Graph Nodes" value={stats?.node_count ?? 0} color="var(--accent-cyan)" />
-          <StatCard label="Graph Edges" value={stats?.edge_count ?? 0} color="var(--accent-violet)" />
-          <StatCard label="Services" value={stats?.services.length ?? 0} color="var(--accent-green)" />
-          <StatCard label="Node Types" value={stats?.labels.length ?? 0} color="var(--accent-amber)" />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 28 }}>
+          <StatCard label="Graph Nodes" value={stats?.node_count ?? 0} color="var(--accent-cyan)" icon="◎" />
+          <StatCard label="Graph Edges" value={stats?.edge_count ?? 0} color="var(--accent-violet)" icon="↔" />
+          <StatCard label="Services" value={stats?.services.length ?? 0} color="var(--accent-green)" icon="⬡" />
+          <StatCard label="Node Types" value={stats?.labels.length ?? 0} color="var(--accent-amber)" icon="⊛" />
         </div>
       )}
 
@@ -1084,20 +1182,24 @@ export default function App() {
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       <Sidebar active={page} onNav={setPage} />
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden',
-                     background: 'var(--bg-primary)' }}>
+                     background: 'var(--bg-primary)' }} role="main">
         {/* Top bar */}
-        <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--border)',
+        <div style={{ padding: '10px 24px', borderBottom: '1px solid var(--border)',
                       display: 'flex', alignItems: 'center', gap: 12,
-                      background: 'rgba(17, 17, 24, 0.8)', backdropFilter: 'blur(8px)' }}>
-          <div style={{ flex: 1 }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+                      background: 'rgba(13,13,24,0.9)', backdropFilter: 'blur(12px)',
+                      position: 'sticky', top: 0, zIndex: 10 }}>
+          {/* Breadcrumb */}
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>Archwarden</span>
+            <span style={{ color: 'var(--border-bright)', fontSize: '0.72rem' }}>›</span>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>
               {page.charAt(0).toUpperCase() + page.slice(1)}
             </span>
           </div>
-          <div style={{ fontSize: '0.75rem', padding: '4px 10px', borderRadius: 20,
-                        background: 'rgba(118,183,0,0.1)', border: '1px solid rgba(118,183,0,0.2)',
-                        color: 'var(--nvidia-green)', fontWeight: 600 }}>
-            NVIDIA × FalkorDB Hackathon 2026
+          {/* Right side badges */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="pill pill-green" style={{ fontSize: '0.65rem' }}>⬡ NVIDIA Nemotron</span>
+            <span className="pill pill-cyan" style={{ fontSize: '0.65rem' }}>FalkorDB</span>
           </div>
         </div>
 

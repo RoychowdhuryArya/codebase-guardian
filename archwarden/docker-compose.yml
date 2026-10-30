@@ -9,7 +9,7 @@ services:
     env_file:
       - .env
     environment:
-      - FALKORDB_HOST=host.docker.internal
+      - FALKORDB_HOST=falkordb
       - FALKORDB_PORT=6379
       - ARCHWARDEN_GRAPH=falkor
     extra_hosts:

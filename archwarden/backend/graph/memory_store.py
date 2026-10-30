@@ -60,10 +60,90 @@ class MemoryGraphStore(GraphStore):
 
     def ro_query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
         """
-        Limited Cypher emulation for the four core principles.
-        Returns empty list for unsupported queries — tests should check
-        the Python evaluators directly.
+        Cypher emulation for frontend visualization, stats, and blast radius.
         """
+        c = cypher.strip()
+        params = params or {}
+
+        # 1. MATCH (n) RETURN count(n)
+        if "RETURN count(n)" in c:
+            return [[self._G.number_of_nodes()]]
+
+        # 2. MATCH ()-[r]->() RETURN count(r)
+        if "RETURN count(r)" in c:
+            return [[self._G.number_of_edges()]]
+
+        # 3. Graph data: Nodes query
+        if "MATCH (n) RETURN id(n)" in c or ("MATCH (n)" in c and "display" in c):
+            rows = []
+            for node_id, data in self._G.nodes(data=True):
+                label = data.get("label", "Node")
+                display = (
+                    data.get("name")
+                    or data.get("qname")
+                    or data.get("path")
+                    or data.get("path_template")
+                    or str(node_id)
+                )
+                rows.append([node_id, label, display])
+            return rows[:200]
+
+        # 4. Graph data: Edges query
+        if "MATCH (a)-[r]->(b)" in c:
+            rows = []
+            for u, v, data in self._G.edges(data=True):
+                rel = data.get("rel", "RELATED")
+                rows.append([u, v, rel])
+            return rows[:500]
+
+        # 5. Label breakdown: MATCH (n) RETURN labels(n)[0] ... count(n)
+        if "labels(n)" in c:
+            counts: dict[str, int] = {}
+            for _, data in self._G.nodes(data=True):
+                lbl = data.get("label", "Unknown")
+                counts[lbl] = counts.get(lbl, 0) + 1
+            sorted_labels = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+            return [[lbl, cnt] for lbl, cnt in sorted_labels]
+
+        # 6. Service list: MATCH (s:Service) RETURN s.name ...
+        if "s:Service" in c and "s.name" in c:
+            svcs = []
+            for _, data in self._G.nodes(data=True):
+                if data.get("label") == "Service":
+                    svcs.append([data.get("name", "unknown"), data.get("language", "python")])
+            return sorted(svcs, key=lambda x: x[0])
+
+        # 7. Blast radius: CALLS reachability
+        if "CALLS" in c and ":Service" in c and "svc" in params:
+            svc_name = params["svc"]
+            visited = set()
+            queue = [(svc_name, 0)]
+            k_hops = 2
+            # Extract k_hops if present in cypher e.g. CALLS*1..2
+            import re
+            m = re.search(r"CALLS\*1\.\.(\d+)", c)
+            if m:
+                k_hops = int(m.group(1))
+
+            results = []
+            while queue:
+                curr, dist = queue.pop(0)
+                if dist >= k_hops:
+                    continue
+                for u, v, data in self._G.edges(data=True):
+                    if data.get("rel") == "CALLS":
+                        neighbor = None
+                        if u == curr and v not in visited and v != svc_name:
+                            neighbor = v
+                        elif v == curr and u not in visited and u != svc_name:
+                            neighbor = u
+                        if neighbor and neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append((neighbor, dist + 1))
+                            lang = self._G.nodes.get(neighbor, {}).get("language", "python")
+                            results.append([neighbor, lang])
+            return results
+
         return []
 
     # ── Rule evaluators (Python-native, no Cypher) ─────────────────────────────
