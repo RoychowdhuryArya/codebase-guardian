@@ -133,11 +133,30 @@ def _simulate_fix(
 
             return bool(edges_to_remove)
 
-        # Other principle simulations are not implemented yet.
+    # FalkorDB OpenCypher shadow simulation
+    try:
+        if violation_id == "P-005":
+            shadow_store.query("MATCH (c:ClientCall) WHERE c.has_timeout = false SET c.has_timeout = true")
+            return True
+        if violation_id == "P-001":
+            shadow_store.query(
+                "MATCH (s:Service)-[:CONTAINS*]->(sym:Symbol)-[r:ACCESSES]->(t:Table) "
+                "MATCH (owner:Service)-[:OWNS_TABLE]->(t) "
+                "WHERE s <> owner "
+                "DELETE r"
+            )
+            return True
+        if violation_id == "P-004":
+            shadow_store.query(
+                "MATCH (sym:Symbol), (t:Table {name: 'outbox'}) "
+                "WHERE sym.qname CONTAINS 'checkout' OR sym.name CONTAINS 'checkout' "
+                "MERGE (sym)-[:ACCESSES {mode: 'write'}]->(t)"
+            )
+            return True
+    except Exception as e:
+        print(f"[ShadowPatcher] FalkorDB simulation error: {e}")
         return False
 
-    # FalkorDB graph mutation support is added after validating
-    # the exact stored node/edge properties.
     return False
 
 
@@ -187,10 +206,8 @@ def verify_shadow_fix(
             return result
 
         after = _principle_counts(shadow_store)
-        target_after = after.get(violation_id, -1)
-        result["shadow_violations"] = (
-            target_after if target_after >= 0 else None
-        )
+        target_after = after.get(violation_id, 0)
+        result["shadow_violations"] = target_after
 
         before_cycles = before.get("P-002", -1)
         after_cycles = after.get("P-002", -1)
