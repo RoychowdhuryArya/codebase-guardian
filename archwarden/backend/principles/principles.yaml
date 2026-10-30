@@ -100,3 +100,27 @@
   status: confirmed
   source: adr
   fix_hint: "Add a timeout parameter to all HTTP client calls (e.g. httpx.get(url, timeout=5.0))."
+
+- id: P-006
+  statement: "Modifications to API routes must not break downstream caller contracts without backward compatibility."
+  kind: diff
+  severity: critical
+  scope: system
+  check:
+    language: diff
+    query: |
+      # P-006 is evaluated by ingest/breaking_changes.py against unified diffs,
+      # not by a Cypher query. It detects: route deletion, HTTP method alteration,
+      # and path parameter renaming. Blast radius is computed via:
+      # MATCH (s:Service)-[:CONTAINS*1..3]->(:Symbol)-[:MAKES_CALL]->(cc:ClientCall)
+      # MATCH (cc)-[:RESOLVES_TO]->(r:Route)
+      # WHERE r.path_template = $modified_path AND ($method = '' OR r.method = $method)
+      #   AND (cc.method IS NULL OR cc.method = '' OR $method = '' OR cc.method = r.method)
+      # RETURN s.name AS broken_service, cc.file AS caller_file, cc.line AS caller_line
+  evidence:
+    support: 0
+    total: 0
+    baseline_violations: 0
+  status: confirmed
+  source: adr
+  fix_hint: "Preserve the previous route/method, deprecate gracefully, or update all calling services."

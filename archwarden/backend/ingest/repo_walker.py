@@ -2,6 +2,9 @@
 Archwarden — Repository Walker + Graph Ingestor
 Walks a multi-service repo, runs AST extraction on each service,
 and upserts nodes/edges into FalkorDB.
+
+Upgraded: now handles TypeScript / JavaScript files alongside Python,
+and triggers OpenAPI spec and docker-compose ingestion automatically.
 """
 from __future__ import annotations
 
@@ -9,8 +12,15 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .ast_extractor import ArchwardenASTVisitor
+from .ast_extractor import ArchwardenASTVisitor, extract_ts_nodes
 from graph.store_protocol import GraphStore
+
+
+# ── File-type constants ───────────────────────────────────────────────────────
+
+_PYTHON_EXTS = {".py"}
+_TS_EXTS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
+_SKIP_DIRS = {".venv", "venv", "__pycache__", ".git", "node_modules", ".next", "dist", "build", ".turbo"}
 
 
 # ── Service discovery ─────────────────────────────────────────────────────────
@@ -20,12 +30,14 @@ def discover_services(repo_dir: str) -> list[dict[str, str]]:
     Auto-detect services in a repo.
     A 'service' is any directory that contains a Python entrypoint:
       - main.py / app.py / server.py / __main__.py
+    or a TypeScript/Next.js entrypoint:
+      - package.json / next.config.js / next.config.ts / index.ts / server.ts
     or any top-level directory.
     """
     repo_path = Path(repo_dir).resolve()
     services: list[dict[str, str]] = []
 
-    # Check if top-level is itself a service
+    # Check if top-level is itself a Python service
     for entry_file in ("main.py", "app.py", "server.py", "api.py"):
         if (repo_path / entry_file).exists():
             services.append({
@@ -36,18 +48,31 @@ def discover_services(repo_dir: str) -> list[dict[str, str]]:
             })
             return services
 
+    # Check if top-level is itself a TS/Next.js service
+    for entry_file in ("package.json", "next.config.js", "next.config.ts"):
+        if (repo_path / entry_file).exists():
+            lang = _detect_language(repo_path)
+            services.append({
+                "name": repo_path.name,
+                "path": str(repo_path),
+                "kind": "service",
+                "language": lang,
+            })
+            return services
+
     # Otherwise walk one level
     for d in sorted(repo_path.iterdir()):
         if not d.is_dir():
             continue
         name = d.name
-        if name.startswith(".") or name in ("node_modules", "venv", ".venv", "__pycache__", ".git"):
+        if name.startswith(".") or name in _SKIP_DIRS:
             continue
+        lang = _detect_language(d)
         services.append({
             "name": name,
             "path": str(d),
             "kind": "service",
-            "language": "python",
+            "language": lang,
             "repo": repo_path.name,
         })
 
@@ -57,10 +82,42 @@ def discover_services(repo_dir: str) -> list[dict[str, str]]:
             "name": repo_path.name,
             "path": str(repo_path),
             "kind": "service",
-            "language": "python",
+            "language": _detect_language(repo_path),
         })
 
     return services
+
+
+def _detect_language(service_path: Path) -> str:
+    """
+    Heuristic: if a directory has package.json or .ts/.tsx files, it's TypeScript/JS.
+    If it has .py files (or main.py), it's Python.
+    Ignores virtual environments and dependency directories (_SKIP_DIRS).
+    Defaults to 'python' if ambiguous.
+    """
+    has_pkg = (service_path / "package.json").exists()
+    has_py = False
+    has_ts = False
+
+    for root, dirs, files in os.walk(service_path):
+        # Prune skip dirs in-place so os.walk does not descend into them
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+        for f in files:
+            _, ext = os.path.splitext(f)
+            if ext in _PYTHON_EXTS:
+                has_py = True
+            elif ext in {".ts", ".tsx"}:
+                has_ts = True
+            if has_py and has_ts:
+                break
+        if has_py and has_ts:
+            break
+
+    if has_pkg or has_ts:
+        return "typescript"
+    if has_py:
+        return "python"
+    return "python"
 
 
 # ── Graph upsert helpers ──────────────────────────────────────────────────────
@@ -105,8 +162,8 @@ def _upsert_symbol(store: GraphStore, sym: dict) -> None:
 def _upsert_route(store: GraphStore, route: dict) -> None:
     store.query(
         """
-        MERGE (r:Route {path_template: $path_template, service: $service})
-        SET r.method = $method, r.protocol = $protocol, r.file = $file, r.line = $line
+        MERGE (r:Route {path_template: $path_template, service: $service, method: $method})
+        SET r.protocol = $protocol, r.file = $file, r.line = $line
         WITH r
         MATCH (sym:Symbol {qname: $handler_qname})
         MERGE (sym)-[:DEFINES]->(r)
@@ -172,7 +229,20 @@ def _derive_calls_edges(store: GraphStore) -> None:
     Derive Service→Service CALLS edges from resolved ClientCall→Route links.
     Also derives from target_hint matching.
     """
-    # First resolve ClientCalls by matching target_hint to Service names
+    # First resolve ClientCalls to Route nodes by matching cc.path to Route.path_template and method
+    store.query(
+        """
+        MATCH (cc:ClientCall), (r:Route)
+        WHERE cc.path = r.path_template
+          AND cc.service <> r.service
+          AND (cc.method IS NULL OR cc.method = '' OR r.method IS NULL OR r.method = '' OR cc.method = r.method)
+        SET cc.resolved = true, cc.resolution_source = 'STATIC'
+        WITH cc, r
+        MERGE (cc)-[:RESOLVES_TO {confidence: 'FACT'}]->(r)
+        """
+    )
+
+    # Fallback: resolve ClientCalls by matching target_hint to Service names
     store.query(
         """
         MATCH (cc:ClientCall)
@@ -185,7 +255,7 @@ def _derive_calls_edges(store: GraphStore) -> None:
         """
     )
 
-    # Derive CALLS edges
+    # Derive CALLS edges from ClientCall→Service resolution
     store.query(
         """
         MATCH (caller:Symbol)-[:MAKES_CALL]->(cc:ClientCall)-[:RESOLVES_TO]->(callee:Service)
@@ -197,6 +267,72 @@ def _derive_calls_edges(store: GraphStore) -> None:
         """
     )
 
+    # Derive CALLS edges from ClientCall→Route resolution
+    store.query(
+        """
+        MATCH (caller:Symbol)-[:MAKES_CALL]->(cc:ClientCall)-[:RESOLVES_TO]->(r:Route)
+        MATCH (caller_svc:Service)-[:CONTAINS*1..3]->(caller)
+        MATCH (callee_svc:Service {name: r.service})
+        WHERE caller_svc.name <> callee_svc.name
+        MERGE (caller_svc)-[c:CALLS]->(callee_svc)
+        ON CREATE SET c.via = 'http', c.count = 1
+        ON MATCH SET c.count = c.count + 1
+        """
+    )
+
+
+# ── TypeScript / JavaScript file ingestor ─────────────────────────────────────
+
+def _ingest_ts_file(
+    store: GraphStore,
+    ts_file: Path,
+    svc: dict,
+    svc_path: Path,
+    stats: dict,
+) -> None:
+    """Parse a single TS/JS file and upsert its routes and client calls."""
+    rel_path = str(ts_file.relative_to(svc_path)).replace("\\", "/")
+    full_rel = f"{svc['name']}/{rel_path}"
+
+    try:
+        with open(ts_file, "r", encoding="utf-8", errors="ignore") as fh:
+            src = fh.read()
+    except Exception:
+        return
+
+    _upsert_file(store, full_rel, svc["name"])
+    stats["files"] += 1
+
+    routes, client_calls = extract_ts_nodes(full_rel, svc["name"], src)
+
+    for route in routes:
+        # Ensure stub Symbol for handler
+        handler_qname = route.get("handler_qname", f"{svc['name']}::ts_handler@{full_rel}")
+        stub_sym = {
+            "qname": handler_qname,
+            "kind": "handler",
+            "file": full_rel,
+            "line": route.get("line", 0),
+            "service": svc["name"],
+        }
+        _upsert_symbol(store, stub_sym)
+        _upsert_route(store, route)
+        stats["routes"] += 1
+
+    for cc in client_calls:
+        # Ensure stub caller Symbol
+        caller_qname = cc.get("caller_qname", f"{svc['name']}::ts_caller@{full_rel}")
+        stub_sym = {
+            "qname": caller_qname,
+            "kind": "method",
+            "file": full_rel,
+            "line": cc.get("line", 0),
+            "service": svc["name"],
+        }
+        _upsert_symbol(store, stub_sym)
+        _upsert_client_call(store, cc)
+        stats["client_calls"] += 1
+
 
 # ── Main ingest entry point ───────────────────────────────────────────────────
 
@@ -205,20 +341,33 @@ def ingest_repo(
     store: GraphStore,
     table_owners: dict[str, str] | None = None,
     service_filter: list[str] | None = None,
+    ingest_openapi: bool = True,
+    ingest_compose: bool = True,
 ) -> dict[str, int]:
     """
-    Walk repo_dir, extract all symbols, and upsert into store.
-    table_owners: {table_name: owning_service_name} overrides (from config/migrations)
-    service_filter: only ingest these service names (for PR head update)
-    Returns stats dict.
+    Walk repo_dir, extract all symbols from Python AND TypeScript/JS files,
+    and upsert into store.
+
+    Args:
+        repo_dir:       Root of the repository to scan.
+        store:          GraphStore instance (FalkorDB or Memory).
+        table_owners:   {table_name: owning_service_name} overrides.
+        service_filter: Only ingest these service names (for PR head update).
+        ingest_openapi: Auto-scan for openapi.yaml/json files (default: True).
+        ingest_compose: Auto-scan for docker-compose.yml (default: True).
+
+    Returns:
+        Stats dict with counts of ingested nodes.
     """
+    import ast as _ast
+
     table_owners = table_owners or {}
     services = discover_services(repo_dir)
 
     if service_filter:
         services = [s for s in services if s["name"] in service_filter]
 
-    stats = {
+    stats: dict[str, int] = {
         "services": 0,
         "files": 0,
         "symbols": 0,
@@ -226,16 +375,41 @@ def ingest_repo(
         "client_calls": 0,
         "table_accesses": 0,
         "topics": 0,
+        "openapi_routes": 0,
+        "openapi_schemas": 0,
+        "compose_services": 0,
     }
 
+    # ── Docker Compose ingestion ───────────────────────────────────────────────
+    if ingest_compose:
+        try:
+            from .openapi_parser import scan_and_ingest_compose
+            compose_result = scan_and_ingest_compose(repo_dir, store)
+            stats["compose_services"] = compose_result.get("services_found", 0)
+        except Exception:
+            pass  # Non-fatal: compose parsing is best-effort
+
+    # ── OpenAPI ingestion ─────────────────────────────────────────────────────
+    if ingest_openapi:
+        try:
+            from .openapi_parser import scan_and_ingest_openapi
+            oa_stats = scan_and_ingest_openapi(repo_dir, store)
+            stats["openapi_routes"] = oa_stats.get("routes", 0)
+            stats["openapi_schemas"] = oa_stats.get("schemas", 0)
+        except Exception:
+            pass  # Non-fatal: openapi parsing is best-effort
+
+    # ── Per-service AST / TS ingestion ────────────────────────────────────────
     for svc in services:
         _upsert_service(store, svc)
         stats["services"] += 1
 
         svc_path = Path(svc["path"])
+
+        # ── Python files ──────────────────────────────────────────────────────
         for py_file in sorted(svc_path.rglob("*.py")):
             # Skip venv / caches
-            if any(p in py_file.parts for p in (".venv", "venv", "__pycache__", ".git", "node_modules")):
+            if any(p in py_file.parts for p in _SKIP_DIRS):
                 continue
 
             rel_path = str(py_file.relative_to(svc_path)).replace("\\", "/")
@@ -244,8 +418,7 @@ def ingest_repo(
             try:
                 with open(py_file, "r", encoding="utf-8", errors="ignore") as fh:
                     src = fh.read()
-                import ast
-                tree = ast.parse(src, filename=str(py_file))
+                tree = _ast.parse(src, filename=str(py_file))
             except Exception:
                 continue
 
@@ -278,6 +451,13 @@ def ingest_repo(
             for tc in visitor.topic_consumes:
                 _upsert_topic(store, tc, "consume")
                 stats["topics"] += 1
+
+        # ── TypeScript / JavaScript files ─────────────────────────────────────
+        for ext in _TS_EXTS:
+            for ts_file in sorted(svc_path.rglob(f"*{ext}")):
+                if any(p in ts_file.parts for p in _SKIP_DIRS):
+                    continue
+                _ingest_ts_file(store, ts_file, svc, svc_path, stats)
 
     _derive_calls_edges(store)
     return stats
