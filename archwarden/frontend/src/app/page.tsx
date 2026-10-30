@@ -40,7 +40,19 @@ interface Health {
   edges: number;
   llm_available: boolean;
 }
-
+interface RemediationResult {
+  violation_id: string;
+  patch: string;
+  explanation: string;
+  verification: {
+    verified: boolean;
+    original_violations?: number | null;
+    shadow_violations?: number | null;
+    new_secondary_violations?: string[];
+    cycles_detected?: number | null;
+    message?: string;
+  };
+}
 // ── Label colors ───────────────────────────────────────────────────────────
 
 const LABEL_COLORS: Record<string, string> = {
@@ -136,6 +148,56 @@ function StatCard({ label, value, sub, color }: { label: string; value: string |
 
 function ViolationCard({ v, index }: { v: Violation; index: number }) {
   const [open, setOpen] = useState(false);
+
+  const [showRemediation, setShowRemediation] = useState(false);
+  const [remediating, setRemediating] = useState(false);
+  const [remediationError, setRemediationError] = useState('');
+  const [remediation, setRemediation] = useState<RemediationResult | null>(null);
+  const [filePath, setFilePath] = useState(String(v.file_path || v.file || ''));
+  const [codeSnippet, setCodeSnippet] = useState(
+    String(v.code_snippet || v.snippet || '')
+  );
+
+  const handleRemediate = async () => {
+    setShowRemediation(true);
+    setRemediating(true);
+    setRemediationError('');
+    setRemediation(null);
+
+    try {
+      const response = await fetch(`${API}/review/remediate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          violation_id: v.principle_id,
+          principle_statement: v.statement,
+          file_path: filePath,
+          code_snippet: codeSnippet,
+          fix_hint: v.fix_hint || '',
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === 'string'
+            ? data.detail
+            : 'Remediation request failed.'
+        );
+      }
+
+      setRemediation(data as RemediationResult);
+    } catch (error) {
+      setRemediationError(
+        error instanceof Error ? error.message : 'Something went wrong.'
+      );
+    } finally {
+      setRemediating(false);
+    }
+  };
+
+
   return (
     <div className="violation-card" style={{ animationDelay: `${index * 0.04}s`, cursor: 'pointer' }}
          onClick={() => setOpen(o => !o)}>
@@ -174,8 +236,238 @@ function ViolationCard({ v, index }: { v: Violation; index: number }) {
             <span style={{ color: 'var(--accent-green)', fontWeight: 600 }}>💡 Fix: </span>
             <span style={{ color: 'var(--text-muted)' }}>{v.fix_hint}</span>
           </div>
+
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              handleRemediate();
+            }}
+            disabled={remediating}
+            style={{
+              marginTop: 12,
+              padding: '10px 16px',
+              borderRadius: 8,
+              border: '1px solid var(--accent-cyan)',
+              background: 'var(--bg-primary)',
+              color: 'var(--accent-cyan)',
+              cursor: remediating ? 'wait' : 'pointer',
+              fontWeight: 600,
+            }}
+          >
+            {remediating ? 'Generating patch...' : '✨ Auto-Remediate with Nemotron'}
+          </button>
+
         </div>
       )}
+
+      {showRemediation && (
+        <div
+          onClick={(event) => event.stopPropagation()}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1000,
+            background: 'rgba(0,0,0,0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+          }}
+        >
+          <div style={{
+            background: 'var(--bg-primary)',
+            border: '1px solid var(--border)',
+            borderRadius: 14,
+            padding: 24,
+            width: '100%',
+            maxWidth: 760,
+            maxHeight: '85vh',
+            overflowY: 'auto',
+            color: 'var(--text-primary)',
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              marginBottom: 18,
+            }}>
+              <h2 style={{ fontSize: '1.1rem', margin: 0 }}>
+                Nemotron AI Remediation
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowRemediation(false)}
+                style={{ padding: '6px 10px', cursor: 'pointer' }}
+              >
+                ✕ Close
+              </button>
+            </div>
+
+            <label style={{ display: 'block', marginBottom: 6 }}>
+              File path
+            </label>
+            <input
+              value={filePath}
+              onChange={(event) => setFilePath(event.target.value)}
+              placeholder="e.g. services/orders.py"
+              style={{
+                width: '100%',
+                padding: 10,
+                marginBottom: 14,
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+              }}
+            />
+
+            <label style={{ display: 'block', marginBottom: 6 }}>
+              Code snippet
+            </label>
+            <textarea
+              value={codeSnippet}
+              onChange={(event) => setCodeSnippet(event.target.value)}
+              placeholder="Paste the relevant code here"
+              rows={5}
+              style={{
+                width: '100%',
+                padding: 10,
+                marginBottom: 14,
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+                fontFamily: 'monospace',
+                resize: 'vertical',
+              }}
+            />
+
+            <button
+              type="button"
+              onClick={handleRemediate}
+              disabled={remediating || !filePath.trim() || !codeSnippet.trim()}
+              style={{
+                padding: '10px 16px',
+                borderRadius: 8,
+                border: 0,
+                background: 'var(--accent-cyan)',
+                color: '#111',
+                fontWeight: 700,
+                cursor: remediating ? 'wait' : 'pointer',
+              }}
+            >
+              {remediating ? 'Generating patch...' : 'Generate / Retry Patch'}
+            </button>
+
+            {remediationError && (
+              <p style={{ color: '#f87171', marginTop: 14 }}>
+                {remediationError}
+              </p>
+            )}
+
+            {remediation && (
+              <div style={{ marginTop: 20 }}>
+                <h3 style={{ fontSize: '1rem' }}>Explanation</h3>
+                <p style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  {remediation.explanation}
+                </p>
+
+                <h3 style={{ fontSize: '1rem', marginTop: 18 }}>
+                  Proposed patch
+                </h3>
+                <pre style={{
+                  padding: 14,
+                  borderRadius: 8,
+                  background: 'var(--bg-primary)',
+                  border: '1px solid var(--border)',
+                  overflowX: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'anywhere',
+                  fontSize: '0.8rem',
+                }}>
+                  {remediation.patch
+                    ? remediation.patch.split('\n').map((line, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            display: 'block',
+                            color: line.startsWith('+') && !line.startsWith('+++')
+                              ? '#4ade80'
+                              : line.startsWith('-') && !line.startsWith('---')
+                                ? '#f87171'
+                                : 'var(--text-muted)',
+                          }}
+                        >
+                          {line}
+                        </span>
+                      ))
+                    : 'No patch was returned. Review the explanation above.'}
+                </pre>
+
+                <div style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 10,
+                  marginTop: 12,
+                }}>
+                  <button
+                    type="button"
+                    disabled={!remediation.patch}
+                    onClick={() => {
+                      void navigator.clipboard.writeText(remediation.patch);
+                    }}
+                    style={{ padding: '8px 12px', cursor: 'pointer' }}
+                  >
+                    Copy patch
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!remediation.patch}
+                    onClick={() => {
+                      const blob = new Blob([remediation.patch], {
+                        type: 'text/x-diff',
+                      });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = 'nemotron-remediation.patch';
+                      link.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    style={{ padding: '8px 12px', cursor: 'pointer' }}
+                  >
+                    Download .patch
+                  </button>
+                </div>
+
+                <div style={{
+                  marginTop: 18,
+                  padding: 12,
+                  borderRadius: 8,
+                  border: '1px solid var(--border)',
+                }}>
+                  <strong>
+                    {remediation.verification.verified
+                      ? '✓ Shadow verification passed'
+                      : '⚠ Not verified'}
+                  </strong>
+                  <p style={{
+                    marginBottom: 0,
+                    color: 'var(--text-muted)',
+                    fontSize: '0.85rem',
+                  }}>
+                    {remediation.verification.message ||
+                      'The backend has not confirmed verification.'}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

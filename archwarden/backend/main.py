@@ -81,10 +81,11 @@ app.add_middleware(
 from api.routes_graph import router as graph_router
 from api.routes_review import router as review_router
 from api.routes_principles import router as principles_router
-
+from api.routes_remediate import router as remediate_router
 app.include_router(graph_router, prefix="/graph", tags=["Graph"])
 app.include_router(review_router, prefix="/review", tags=["PR Review"])
 app.include_router(principles_router, prefix="/principles", tags=["Principles"])
+app.include_router(remediate_router, prefix="/review", tags=["AI Remediation"])
 
 
 @app.get("/health")
