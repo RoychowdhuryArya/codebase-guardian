@@ -576,6 +576,79 @@ class TestPathParamChanged:
         assert "{order_uuid}" in c.new_path
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Language detection skip-dirs & Blast-radius HTTP method matching
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestReviewerFixes:
+
+    def test_detect_language_ignores_venv_ts(self, tmp_path: Path) -> None:
+        """A Python service containing fake.ts inside venv/ is classified as python."""
+        from ingest.repo_walker import _detect_language
+
+        svc = tmp_path / "py_service"
+        svc.mkdir()
+        (svc / "main.py").write_text("print('hello')", encoding="utf-8")
+        venv_lib = svc / "venv" / "lib"
+        venv_lib.mkdir(parents=True)
+        (venv_lib / "fake.ts").write_text("export const x = 1;", encoding="utf-8")
+
+        assert _detect_language(svc) == "python"
+
+    def test_detect_language_ignores_node_modules(self, tmp_path: Path) -> None:
+        """A Python service with node_modules is classified as python."""
+        from ingest.repo_walker import _detect_language
+
+        svc = tmp_path / "py_service_nm"
+        svc.mkdir()
+        (svc / "app.py").write_text("print('hello')", encoding="utf-8")
+        nm = svc / "node_modules" / "some-lib"
+        nm.mkdir(parents=True)
+        (nm / "index.ts").write_text("export const y = 2;", encoding="utf-8")
+
+        assert _detect_language(svc) == "python"
+
+    def test_query_blast_radius_passes_method_param(self) -> None:
+        """query_blast_radius passes method into cypher query params."""
+        from ingest.breaking_changes import query_blast_radius
+
+        class MockStore:
+            def __init__(self):
+                self.calls = []
+
+            def ro_query(self, cypher: str, params: dict) -> list:
+                self.calls.append((cypher, params))
+                return [["downstream_svc", "caller.ts", 42]]
+
+        store = MockStore()
+        res = query_blast_radius(store, "/api/v1/orders", "GET")
+        assert len(res) == 1
+        assert res[0]["broken_service"] == "downstream_svc"
+        assert len(store.calls) == 1
+        cypher, params = store.calls[0]
+        assert params["modified_path"] == "/api/v1/orders"
+        assert params["method"] == "GET"
+        assert "$method" in cypher
+
+    def test_derive_calls_edges_matches_method(self) -> None:
+        """_derive_calls_edges includes method matching in the RESOLVES_TO query."""
+        from ingest.repo_walker import _derive_calls_edges
+
+        recorded_queries = []
+
+        class MockStore:
+            def query(self, cypher: str, params: dict | None = None) -> None:
+                recorded_queries.append(cypher)
+
+        store = MockStore()
+        _derive_calls_edges(store)
+        assert len(recorded_queries) >= 1
+        resolves_query = recorded_queries[0]
+        assert "RESOLVES_TO" in resolves_query
+        assert "cc.method" in resolves_query
+        assert "r.method" in resolves_query
+
+
 if __name__ == "__main__":
     # Allow running directly: python test_alekhya.py
     import subprocess

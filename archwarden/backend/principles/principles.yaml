@@ -113,7 +113,9 @@
       # not by a Cypher query. It detects: route deletion, HTTP method alteration,
       # and path parameter renaming. Blast radius is computed via:
       # MATCH (s:Service)-[:CONTAINS*1..3]->(:Symbol)-[:MAKES_CALL]->(cc:ClientCall)
-      # MATCH (cc)-[:RESOLVES_TO]->(r:Route {path_template: $modified_path})
+      # MATCH (cc)-[:RESOLVES_TO]->(r:Route)
+      # WHERE r.path_template = $modified_path AND ($method = '' OR r.method = $method)
+      #   AND (cc.method IS NULL OR cc.method = '' OR $method = '' OR cc.method = r.method)
       # RETURN s.name AS broken_service, cc.file AS caller_file, cc.line AS caller_line
   evidence:
     support: 0

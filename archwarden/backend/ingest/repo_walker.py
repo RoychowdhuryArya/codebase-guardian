@@ -92,11 +92,26 @@ def _detect_language(service_path: Path) -> str:
     """
     Heuristic: if a directory has package.json or .ts/.tsx files, it's TypeScript/JS.
     If it has .py files (or main.py), it's Python.
+    Ignores virtual environments and dependency directories (_SKIP_DIRS).
     Defaults to 'python' if ambiguous.
     """
-    has_py = any(service_path.rglob("*.py"))
-    has_ts = any(service_path.rglob("*.ts")) or any(service_path.rglob("*.tsx"))
     has_pkg = (service_path / "package.json").exists()
+    has_py = False
+    has_ts = False
+
+    for root, dirs, files in os.walk(service_path):
+        # Prune skip dirs in-place so os.walk does not descend into them
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+        for f in files:
+            _, ext = os.path.splitext(f)
+            if ext in _PYTHON_EXTS:
+                has_py = True
+            elif ext in {".ts", ".tsx"}:
+                has_ts = True
+            if has_py and has_ts:
+                break
+        if has_py and has_ts:
+            break
 
     if has_pkg or has_ts:
         return "typescript"
@@ -214,11 +229,13 @@ def _derive_calls_edges(store: GraphStore) -> None:
     Derive Service→Service CALLS edges from resolved ClientCall→Route links.
     Also derives from target_hint matching.
     """
-    # First resolve ClientCalls to Route nodes by matching cc.path to Route.path_template
+    # First resolve ClientCalls to Route nodes by matching cc.path to Route.path_template and method
     store.query(
         """
         MATCH (cc:ClientCall), (r:Route)
-        WHERE cc.path = r.path_template AND cc.service <> r.service
+        WHERE cc.path = r.path_template
+          AND cc.service <> r.service
+          AND (cc.method IS NULL OR cc.method = '' OR r.method IS NULL OR r.method = '' OR cc.method = r.method)
         SET cc.resolved = true, cc.resolution_source = 'STATIC'
         WITH cc, r
         MERGE (cc)-[:RESOLVES_TO {confidence: 'FACT'}]->(r)

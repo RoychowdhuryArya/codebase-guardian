@@ -188,7 +188,10 @@ def detect_route_changes(diff_hunks: list[dict]) -> list[RouteChange]:
 
 _BLAST_CYPHER = """
 MATCH (s:Service)-[:CONTAINS*1..3]->(:Symbol)-[:MAKES_CALL]->(cc:ClientCall)
-MATCH (cc)-[:RESOLVES_TO]->(r:Route {path_template: $modified_path})
+MATCH (cc)-[:RESOLVES_TO]->(r:Route)
+WHERE r.path_template = $modified_path
+  AND ($method = '' OR r.method = $method)
+  AND (cc.method IS NULL OR cc.method = '' OR $method = '' OR cc.method = r.method)
 RETURN s.name AS broken_service, cc.file AS caller_file, cc.line AS caller_line
 """
 
@@ -196,18 +199,25 @@ RETURN s.name AS broken_service, cc.file AS caller_file, cc.line AS caller_line
 def query_blast_radius(
     store: GraphStore,
     path_template: str,
+    method: str = "",
 ) -> list[dict[str, Any]]:
     """
-    Query FalkorDB for all services that call a given route path.
+    Query FalkorDB for all services that call a given route path and method.
 
     Args:
         store:         Read-only-capable GraphStore (FalkorDB or Memory).
         path_template: The route path that was modified/deleted.
+        method:        The HTTP method that was modified/deleted (e.g. 'GET', 'POST').
+                       If omitted or empty, matches any method.
 
     Returns:
         List of {broken_service, caller_file, caller_line} dicts.
     """
-    rows = store.ro_query(_BLAST_CYPHER, {"modified_path": path_template})
+    params = {
+        "modified_path": path_template,
+        "method": (method or "").upper(),
+    }
+    rows = store.ro_query(_BLAST_CYPHER, params)
     results = []
     for row in rows:
         results.append({
@@ -248,7 +258,7 @@ def analyze_breaking_changes(
 
     for change in route_changes:
         # Query FalkorDB for services calling the old (modified/deleted) route
-        blast = query_blast_radius(store, change.old_path)
+        blast = query_blast_radius(store, change.old_path, change.old_method)
 
         if blast:
             for hit in blast:
