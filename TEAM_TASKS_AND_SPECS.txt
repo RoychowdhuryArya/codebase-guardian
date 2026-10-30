@@ -1,6 +1,6 @@
 ================================================================================
 CODEBASE GUARDIAN (ARCHWARDEN) — TEAM TASK ALLOCATION & TECHNICAL SPECIFICATIONS
-NVIDIA & NEBIUS HACKATHON: CODING AND AGENTIC ENGINEERING TRACK
+ARCHITECTURE GOVERNANCE & AGENTIC ENGINEERING TRACK
 ================================================================================
 
 PROJECT REPOSITORY:

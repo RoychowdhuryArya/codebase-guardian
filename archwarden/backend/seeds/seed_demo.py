@@ -17,7 +17,16 @@ from graph.store_protocol import GraphStore
 from graph.memory_store import MemoryGraphStore
 
 
-def seed(store: GraphStore) -> None:
+def seed(store: GraphStore, scale: int = 6) -> None:
+    if scale >= 50:
+        if isinstance(store, MemoryGraphStore):
+            print("[Seed] Seeding enterprise 50-microservice topology into MemoryGraphStore...")
+            _seed_memory_50(store)
+            print(f"[Seed] 50-service graph created: {store.node_count()} nodes, {store.edge_count()} edges")
+        else:
+            print("[Seed] Seeding enterprise 50-microservice topology into FalkorDB...")
+            _seed_falkor_50(store)
+        return
 
     if isinstance(store, MemoryGraphStore):
         print("[Seed] Using native in-memory graph seeder...")
@@ -349,3 +358,272 @@ def _seed_memory_graph(store: MemoryGraphStore) -> None:
 
     for source, target in calls:
         store.add_edge(source, target, "CALLS", {"via": "http", "count": 1})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Enterprise Scale Topology (50 Microservices across 6 domains)
+# ══════════════════════════════════════════════════════════════════════════════
+
+ENTERPRISE_50_SERVICES = [
+    # Domain 1: Identity & Security (7)
+    {"name": "api-gateway", "domain": "core", "language": "python", "path": "services/api-gateway"},
+    {"name": "auth-service", "domain": "auth", "language": "python", "path": "services/auth-service"},
+    {"name": "user-profile", "domain": "auth", "language": "typescript", "path": "services/user-profile"},
+    {"name": "rbac-service", "domain": "auth", "language": "python", "path": "services/rbac-service"},
+    {"name": "session-manager", "domain": "auth", "language": "typescript", "path": "services/session-manager"},
+    {"name": "token-vault", "domain": "auth", "language": "python", "path": "services/token-vault"},
+    {"name": "mfa-verifier", "domain": "auth", "language": "python", "path": "services/mfa-verifier"},
+
+    # Domain 2: Commerce, Checkout & Orders (9)
+    {"name": "order-service", "domain": "orders", "language": "python", "path": "services/order-service"},
+    {"name": "cart-service", "domain": "orders", "language": "typescript", "path": "services/cart-service"},
+    {"name": "checkout-service", "domain": "orders", "language": "python", "path": "services/checkout-service"},
+    {"name": "pricing-engine", "domain": "orders", "language": "python", "path": "services/pricing-engine"},
+    {"name": "discounts-service", "domain": "orders", "language": "python", "path": "services/discounts-service"},
+    {"name": "tax-calculator", "domain": "orders", "language": "python", "path": "services/tax-calculator"},
+    {"name": "coupon-service", "domain": "orders", "language": "typescript", "path": "services/coupon-service"},
+    {"name": "giftcard-engine", "domain": "orders", "language": "python", "path": "services/giftcard-engine"},
+    {"name": "currency-service", "domain": "orders", "language": "python", "path": "services/currency-service"},
+
+    # Domain 3: Payments, Ledger & Billing (8)
+    {"name": "payment-service", "domain": "payments", "language": "python", "path": "services/payment-service"},
+    {"name": "payment-gateway", "domain": "payments", "language": "python", "path": "services/payment-gateway"},
+    {"name": "ledger-service", "domain": "payments", "language": "python", "path": "services/ledger-service"},
+    {"name": "fraud-detector", "domain": "payments", "language": "python", "path": "services/fraud-detector"},
+    {"name": "invoicing-service", "domain": "payments", "language": "python", "path": "services/invoicing-service"},
+    {"name": "subscription-billing", "domain": "payments", "language": "typescript", "path": "services/subscription-billing"},
+    {"name": "payout-relay", "domain": "payments", "language": "python", "path": "services/payout-relay"},
+    {"name": "refund-manager", "domain": "payments", "language": "python", "path": "services/refund-manager"},
+
+    # Domain 4: Inventory, Logistics & Fulfillment (9)
+    {"name": "inventory-service", "domain": "inventory", "language": "python", "path": "services/inventory-service"},
+    {"name": "warehouse-mgmt", "domain": "inventory", "language": "python", "path": "services/warehouse-mgmt"},
+    {"name": "shipping-service", "domain": "inventory", "language": "python", "path": "services/shipping-service"},
+    {"name": "fleet-tracker", "domain": "inventory", "language": "typescript", "path": "services/fleet-tracker"},
+    {"name": "returns-service", "domain": "inventory", "language": "python", "path": "services/returns-service"},
+    {"name": "supplier-portal", "domain": "inventory", "language": "typescript", "path": "services/supplier-portal"},
+    {"name": "packing-dispatcher", "domain": "inventory", "language": "python", "path": "services/packing-dispatcher"},
+    {"name": "barcode-scanner", "domain": "inventory", "language": "python", "path": "services/barcode-scanner"},
+    {"name": "procurement-service", "domain": "inventory", "language": "python", "path": "services/procurement-service"},
+
+    # Domain 5: Catalog, Search & Recommendations (8)
+    {"name": "catalog-service", "domain": "catalog", "language": "python", "path": "services/catalog-service"},
+    {"name": "search-indexer", "domain": "catalog", "language": "python", "path": "services/search-indexer"},
+    {"name": "recommendation-engine", "domain": "catalog", "language": "python", "path": "services/recommendation-engine"},
+    {"name": "reviews-ratings", "domain": "catalog", "language": "typescript", "path": "services/reviews-ratings"},
+    {"name": "category-manager", "domain": "catalog", "language": "python", "path": "services/category-manager"},
+    {"name": "media-assets", "domain": "catalog", "language": "typescript", "path": "services/media-assets"},
+    {"name": "inventory-lookup", "domain": "catalog", "language": "python", "path": "services/inventory-lookup"},
+    {"name": "price-crawler", "domain": "catalog", "language": "python", "path": "services/price-crawler"},
+
+    # Domain 6: Notifications, Observability & Infrastructure (9)
+    {"name": "notification-service", "domain": "infra", "language": "python", "path": "services/notification-service"},
+    {"name": "email-worker", "domain": "infra", "language": "typescript", "path": "services/email-worker"},
+    {"name": "sms-relay", "domain": "infra", "language": "python", "path": "services/sms-relay"},
+    {"name": "push-notifier", "domain": "infra", "language": "typescript", "path": "services/push-notifier"},
+    {"name": "audit-logger", "domain": "infra", "language": "python", "path": "services/audit-logger"},
+    {"name": "metrics-aggregator", "domain": "infra", "language": "python", "path": "services/metrics-aggregator"},
+    {"name": "tracing-collector", "domain": "infra", "language": "python", "path": "services/tracing-collector"},
+    {"name": "alert-router", "domain": "infra", "language": "python", "path": "services/alert-router"},
+    {"name": "event-streamer", "domain": "infra", "language": "python", "path": "services/event-streamer"},
+]
+
+ENTERPRISE_CALLS = [
+    # Gateway to Domain Routers
+    ("api-gateway", "auth-service"),
+    ("api-gateway", "order-service"),
+    ("api-gateway", "cart-service"),
+    ("api-gateway", "catalog-service"),
+    ("api-gateway", "user-profile"),
+    ("api-gateway", "subscription-billing"),
+    # Auth Cluster
+    ("auth-service", "user-profile"),
+    ("auth-service", "rbac-service"),
+    ("auth-service", "session-manager"),
+    ("auth-service", "token-vault"),
+    ("auth-service", "mfa-verifier"),
+    # Commerce & Orders Cluster
+    ("order-service", "checkout-service"),
+    ("order-service", "pricing-engine"),
+    ("order-service", "payment-service"),
+    ("order-service", "inventory-service"),
+    ("order-service", "notification-service"),
+    ("cart-service", "catalog-service"),
+    ("cart-service", "pricing-engine"),
+    ("cart-service", "discounts-service"),
+    ("cart-service", "coupon-service"),
+    ("checkout-service", "pricing-engine"),
+    ("checkout-service", "tax-calculator"),
+    ("checkout-service", "payment-gateway"),
+    ("checkout-service", "giftcard-engine"),
+    ("pricing-engine", "discounts-service"),
+    ("pricing-engine", "currency-service"),
+    ("pricing-engine", "tax-calculator"),
+    # Payments Cluster
+    ("payment-gateway", "fraud-detector"),
+    ("payment-gateway", "payment-service"),
+    ("payment-gateway", "ledger-service"),
+    ("payment-gateway", "invoicing-service"),
+    ("payment-gateway", "currency-service"),
+    ("payment-gateway", "payout-relay"),
+    ("payment-service", "ledger-service"),
+    ("payment-service", "fraud-detector"),
+    ("payment-service", "refund-manager"),
+    ("payment-service", "notification-service"),
+    ("subscription-billing", "payment-gateway"),
+    ("subscription-billing", "invoicing-service"),
+    ("subscription-billing", "user-profile"),
+    # Inventory & Fulfillment Cluster
+    ("inventory-service", "warehouse-mgmt"),
+    ("inventory-service", "shipping-service"),
+    ("inventory-service", "procurement-service"),
+    ("warehouse-mgmt", "packing-dispatcher"),
+    ("warehouse-mgmt", "barcode-scanner"),
+    ("warehouse-mgmt", "shipping-service"),
+    ("shipping-service", "fleet-tracker"),
+    ("shipping-service", "returns-service"),
+    ("shipping-service", "notification-service"),
+    ("supplier-portal", "inventory-service"),
+    ("supplier-portal", "procurement-service"),
+    # Catalog & Recommendations
+    ("catalog-service", "category-manager"),
+    ("catalog-service", "media-assets"),
+    ("catalog-service", "inventory-lookup"),
+    ("catalog-service", "price-crawler"),
+    ("search-indexer", "catalog-service"),
+    ("search-indexer", "reviews-ratings"),
+    ("recommendation-engine", "catalog-service"),
+    ("recommendation-engine", "user-profile"),
+    ("recommendation-engine", "reviews-ratings"),
+    # Notifications & Observability
+    ("notification-service", "email-worker"),
+    ("notification-service", "sms-relay"),
+    ("notification-service", "push-notifier"),
+    ("audit-logger", "event-streamer"),
+    ("alert-router", "notification-service"),
+    ("alert-router", "email-worker"),
+    ("metrics-aggregator", "tracing-collector"),
+    ("metrics-aggregator", "alert-router"),
+]
+
+
+def _seed_memory_50(store: MemoryGraphStore) -> None:
+    """Populate 50 enterprise services into in-memory NetworkX store."""
+    for svc in ENTERPRISE_50_SERVICES:
+        store.add_node("Service", {
+            "name": svc["name"],
+            "kind": "service",
+            "domain": svc["domain"],
+            "language": svc["language"],
+            "path": svc["path"],
+        })
+
+    # Tables with ownership
+    tables = [
+        ("orders", "order-service"),
+        ("payments", "payment-service"),
+        ("inventory", "inventory-service"),
+        ("shipments", "shipping-service"),
+        ("users", "user-profile"),
+        ("ledgers", "ledger-service"),
+        ("catalog", "catalog-service"),
+        ("outbox", "order-service"),
+        ("warehouse_stock", "warehouse-mgmt"),
+    ]
+    for table_name, owner in tables:
+        store.add_node("Table", {"name": table_name})
+        store.add_edge(owner, table_name, "OWNS_TABLE")
+
+    # Topics
+    topics = [
+        "order.created", "payment.processed", "shipment.dispatched",
+        "inventory.depleted", "user.registered", "invoice.issued"
+    ]
+    for topic_name in topics:
+        store.add_node("Topic", {"name": topic_name})
+
+    # Core symbols
+    symbols = [
+        ("order-service::checkout.create_order", "order-service"),
+        ("order-service::db.read_payments_table", "order-service"),
+        ("payment-gateway::charge.process_transaction", "payment-gateway"),
+        ("payment-service::processor.charge", "payment-service"),
+        ("inventory-service::stock.reserve", "inventory-service"),
+        ("shipping-service::dispatch.create_shipment", "shipping-service"),
+    ]
+    for qname, service in symbols:
+        store.add_node("Symbol", {"qname": qname, "service": service})
+
+    # Architecture Violations seeded into the 50-service topology:
+    # 1. P-001: order-service accesses payment-service's payments table
+    store.add_edge(
+        "order-service::db.read_payments_table",
+        "payments",
+        "ACCESSES",
+        {"mode": "read", "evidence": "order-service/checkout.py:45"}
+    )
+    # 2. P-004: dual-write without outbox
+    store.add_edge(
+        "order-service::checkout.create_order",
+        "orders",
+        "ACCESSES",
+        {"mode": "write", "evidence": "order-service/checkout.py:28"}
+    )
+    store.add_edge(
+        "order-service::checkout.create_order",
+        "order.created",
+        "PRODUCES",
+    )
+    # 3. P-005: calls without timeout
+    store.add_node("ClientCall", {
+        "name": "payment-gateway:/process",
+        "service": "checkout-service",
+        "target_hint": "payment-gateway",
+        "path": "/process",
+        "method": "POST",
+        "file": "checkout-service/main.py",
+        "line": 15,
+        "has_timeout": False,
+    })
+    store.add_edge("order-service::checkout.create_order", "payment-gateway:/process", "MAKES_CALL")
+    store.add_edge("payment-gateway:/process", "payment-gateway", "RESOLVES_TO")
+
+    # Inter-service calls
+    for source, target in ENTERPRISE_CALLS:
+        store.add_edge(source, target, "CALLS", {"via": "http", "count": 1})
+
+
+def _seed_falkor_50(store: GraphStore) -> None:
+    """Populate 50 enterprise services into FalkorDB via Cypher."""
+    for svc in ENTERPRISE_50_SERVICES:
+        store.query(
+            "MERGE (s:Service {name: $name}) SET s.kind='service', s.domain=$domain, s.language=$language, s.path=$path",
+            svc
+        )
+
+    tables = [
+        ("orders", "order-service"),
+        ("payments", "payment-service"),
+        ("inventory", "inventory-service"),
+        ("shipments", "shipping-service"),
+        ("users", "user-profile"),
+        ("ledgers", "ledger-service"),
+        ("catalog", "catalog-service"),
+        ("outbox", "order-service"),
+        ("warehouse_stock", "warehouse-mgmt"),
+    ]
+    for tname, owner in tables:
+        store.query("MERGE (t:Table {name: $name})", {"name": tname})
+        store.query(
+            "MATCH (s:Service {name: $owner}), (t:Table {name: $tname}) MERGE (s)-[:OWNS_TABLE]->(t)",
+            {"owner": owner, "tname": tname}
+        )
+
+    for topic_name in ("order.created", "payment.processed", "shipment.dispatched", "inventory.depleted", "user.registered"):
+        store.query("MERGE (top:Topic {name: $name})", {"name": topic_name})
+
+    for source, target in ENTERPRISE_CALLS:
+        _create_calls(store, source, target, "http")
+
+    print(f"[Seed] Successfully seeded {len(ENTERPRISE_50_SERVICES)} services and {len(ENTERPRISE_CALLS)} dependency edges.")
+

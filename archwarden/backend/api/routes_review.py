@@ -14,8 +14,8 @@ router = APIRouter()
 
 
 class PRReviewRequest(BaseModel):
-    pr_id: str
-    repo_dir: str
+    pr_id: Optional[str] = "PR-review"
+    repo_dir: Optional[str] = ""
     diff: Optional[str] = ""
     k_hops: int = 2
 
@@ -34,12 +34,29 @@ async def run_review(req: PRReviewRequest):
     4. Return new violations + blast radius
     """
     from main import get_store
+    import tempfile, os
+
     store = get_store()
+    temp_dir = None
+    repo_dir = req.repo_dir
+
+    if not repo_dir or not os.path.isdir(repo_dir):
+        temp_dir = tempfile.TemporaryDirectory()
+        repo_dir = temp_dir.name
+        # Pre-populate dummy service structure for all services
+        from seeds.seed_demo import ENTERPRISE_50_SERVICES
+        all_services = [s["name"] for s in ENTERPRISE_50_SERVICES]
+        for s in all_services:
+            s_path = os.path.join(repo_dir, s)
+            os.makedirs(s_path, exist_ok=True)
+            with open(os.path.join(s_path, "main.py"), "w") as f:
+                f.write(f"# {s}\n")
+
     try:
         from review.pr_reviewer import review_pr
         result = review_pr(
-            pr_id=req.pr_id,
-            repo_dir=req.repo_dir,
+            pr_id=req.pr_id or "custom-PR",
+            repo_dir=repo_dir,
             diff_text=req.diff or "",
             base_store=store,
             k_hops=req.k_hops,
@@ -47,6 +64,9 @@ async def run_review(req: PRReviewRequest):
         return result.to_dict()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_dir:
+            temp_dir.cleanup()
 
 
 @router.get("/audit")
@@ -142,3 +162,132 @@ def create_order(data):
                 "summary": f"Found {len(violations)} architecture violations",
                 "error": None,
             }
+
+
+class GitHubPRImportRequest(BaseModel):
+    pr_url: str  # e.g. https://github.com/owner/repo/pull/2 or owner/repo#2
+
+
+@router.post("/import-github-pr")
+async def import_github_pr(req: GitHubPRImportRequest):
+    """
+    Fetch a real pull request unified diff and metadata from GitHub.
+    Accepts full PR URL (e.g. https://github.com/owner/repo/pull/2) or owner/repo#2.
+    """
+    import json
+    import re
+    from urllib.request import Request, urlopen
+    import urllib.error
+
+    pr_url = req.pr_url.strip()
+    m = re.search(r"(?:github\.com/)?([^/]+)/([^/#]+)(?:/pull/|#)(\d+)", pr_url)
+    if not m:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid GitHub PR URL. Must be: https://github.com/{owner}/{repo}/pull/{number} or {owner}/{repo}#{number}"
+        )
+    owner, repo, pr_num = m.group(1), m.group(2), m.group(3)
+
+    # 1. Fetch unified diff
+    diff_url = f"https://patch-diff.githubusercontent.com/raw/{owner}/{repo}/pull/{pr_num}.diff"
+    headers = {
+        "User-Agent": "Archwarden-Guardian/1.0",
+        "Accept": "text/plain",
+    }
+    github_token = os.getenv("GITHUB_TOKEN")
+    if github_token:
+        headers["Authorization"] = f"token {github_token}"
+
+    diff_text = ""
+    try:
+        r = Request(diff_url, headers=headers)
+        with urlopen(r, timeout=15) as resp:
+            diff_text = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        # Fallback to GitHub API endpoint
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_num}"
+        api_headers = {
+            "User-Agent": "Archwarden-Guardian/1.0",
+            "Accept": "application/vnd.github.v3.diff",
+        }
+        if github_token:
+            api_headers["Authorization"] = f"token {github_token}"
+        try:
+            r = Request(api_url, headers=api_headers)
+            with urlopen(r, timeout=15) as resp:
+                diff_text = resp.read().decode("utf-8", errors="replace")
+        except Exception as err:
+            raise HTTPException(status_code=502, detail=f"Could not fetch PR diff from GitHub: {err}")
+
+    # 2. Fetch metadata (title, author, files)
+    title = f"{owner}/{repo} #{pr_num}"
+    author = "unknown"
+    changed_files = 0
+    try:
+        api_meta_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_num}"
+        meta_headers = {"User-Agent": "Archwarden-Guardian/1.0", "Accept": "application/vnd.github.v3+json"}
+        if github_token:
+            meta_headers["Authorization"] = f"token {github_token}"
+        r_meta = Request(api_meta_url, headers=meta_headers)
+        with urlopen(r_meta, timeout=10) as resp:
+            meta_data = json.loads(resp.read().decode("utf-8"))
+            title = meta_data.get("title", title)
+            author = meta_data.get("user", {}).get("login", author)
+            changed_files = meta_data.get("changed_files", 0)
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "owner": owner,
+        "repo": repo,
+        "pr_number": pr_num,
+        "title": title,
+        "author": author,
+        "changed_files": changed_files,
+        "diff": diff_text,
+    }
+
+
+@router.get("/local-git-diff")
+async def get_local_git_diff(repo_path: Optional[str] = None):
+    """Extract current git diff from the local workspace repository."""
+    import subprocess
+    diff_text = ""
+
+    # Find root containing .git if not explicitly provided
+    cwd = repo_path if repo_path and os.path.isdir(repo_path) else os.getcwd()
+    check_dir = os.path.abspath(cwd)
+    while check_dir:
+        if os.path.exists(os.path.join(check_dir, ".git")):
+            cwd = check_dir
+            break
+        parent = os.path.dirname(check_dir)
+        if parent == check_dir:
+            break
+        check_dir = parent
+
+    # Working tree diffs take precedence, followed by staged, origin branch, and HEAD commit
+    cmds = [
+        ["git", "diff"],
+        ["git", "diff", "--cached"],
+        ["git", "diff", "origin/main...HEAD"],
+        ["git", "diff", "HEAD~1...HEAD"],
+    ]
+    for cmd in cmds:
+        try:
+            res = subprocess.run(
+                cmd,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            raw_out = res.stdout.decode("utf-8", errors="replace").strip()
+            if res.returncode == 0 and raw_out:
+                diff_text = raw_out
+                break
+        except Exception as e:
+            print(f"[local-git-diff] error running {' '.join(cmd)}: {e}")
+    return {"diff": diff_text, "lines": len(diff_text.splitlines()) if diff_text else 0, "repo_path": cwd}
+

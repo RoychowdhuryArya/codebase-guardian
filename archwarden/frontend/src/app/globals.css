@@ -1,6 +1,6 @@
 /* ══════════════════════════════════════════════════
    Archwarden — Global Design System
-   Premium dark theme · Glassmorphism · NVIDIA × FalkorDB
+   Premium dark theme · Glassmorphism · Architecture Guardian
    ══════════════════════════════════════════════════ */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -463,7 +463,29 @@ body {
   animation: fadeIn 0.15s ease;
 }
 
+/* ── Graph Visualization Utilities ────────────────── */
+@keyframes pulseRing {
+  0%   { transform: scale(0.95); opacity: 0.8; }
+  50%  { transform: scale(1.25); opacity: 0.2; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+@keyframes dashFlow {
+  to { stroke-dashoffset: -20; }
+}
+
+.pulsing-aura {
+  animation: pulseRing 2.4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.animated-violation-line {
+  stroke-dasharray: 6, 4;
+  animation: dashFlow 1s linear infinite;
+}
+
 /* ── Responsive ───────────────────────────────────── */
 @media (max-width: 768px) {
   .hide-mobile { display: none !important; }
 }
+

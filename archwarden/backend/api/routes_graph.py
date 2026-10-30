@@ -122,7 +122,7 @@ async def blast_radius(req: BlastRadiusRequest):
 async def graph_data():
     """
     Return nodes and edges for frontend visualization.
-    Limits to 200 nodes for performance.
+    Supports scaling up to 50 services and rich topologies.
     """
     store = _store()
     try:
@@ -130,7 +130,7 @@ async def graph_data():
         nodes_raw = store.ro_query(
             "MATCH (n) RETURN id(n) AS id, labels(n)[0] AS label, "
             "coalesce(n.name, n.qname, n.path, n.path_template, 'unknown') AS display "
-            "LIMIT 200"
+            "LIMIT 800"
         )
         nodes = [
             {"id": str(r[0]), "label": r[1] or "Node", "display": r[2] or "?"}
@@ -139,7 +139,7 @@ async def graph_data():
 
         # Edges
         edges_raw = store.ro_query(
-            "MATCH (a)-[r]->(b) RETURN id(a) AS src, id(b) AS dst, type(r) AS rel LIMIT 500"
+            "MATCH (a)-[r]->(b) RETURN id(a) AS src, id(b) AS dst, type(r) AS rel LIMIT 1500"
         )
         edges = [
             {"source": str(r[0]), "target": str(r[1]), "rel": r[2]}
@@ -152,12 +152,19 @@ async def graph_data():
 
 
 @router.post("/seed")
-async def seed_demo():
-    """Re-seed the demo graph."""
+async def seed_demo(scale: int = 6):
+    """Re-seed the demo graph (supports scale=6 or scale=50)."""
     store = _store()
     try:
         from seeds.seed_demo import seed
-        seed(store)
-        return {"success": True, "message": "Demo data seeded successfully"}
+        seed(store, scale=scale)
+        return {"success": True, "scale": scale, "message": f"Demo data seeded successfully (scale={scale})"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/seed-50")
+async def seed_50():
+    """Quick endpoint to seed the 50 enterprise microservice topology."""
+    return await seed_demo(scale=50)
+

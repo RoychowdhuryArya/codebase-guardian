@@ -143,13 +143,13 @@ function Sidebar({ active, onNav }: { active: string; onNav: (p: string) => void
 
       {/* Footer branding */}
       <div style={{ padding: '14px 10px 32px', borderTop: '1px solid var(--border)' }}>
-        <div className="section-label" style={{ marginBottom: 10 }}>Powered by</div>
+        <div className="section-label" style={{ marginBottom: 10 }}>Core Engines</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div className="pill pill-green" style={{ fontSize: '0.68rem', justifyContent: 'center' }}>
             ⬡ NVIDIA Nemotron
           </div>
           <div className="pill pill-cyan" style={{ fontSize: '0.68rem', justifyContent: 'center' }}>
-            ◎ FalkorDB OpenCypher
+            ◎ OpenCypher Graph Engine
           </div>
         </div>
       </div>
@@ -613,14 +613,34 @@ function GraphView() {
             {graphData.nodes.length} nodes · {graphData.edges.length} edges
           </span>
         )}
-        <button
-          className="btn btn-ghost"
-          onClick={loadGraph}
-          aria-label="Refresh graph"
-          style={{ marginLeft: 'auto', fontSize: '0.78rem', padding: '6px 12px' }}
-        >
-          ↺ Refresh
-        </button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button
+            className="btn btn-ghost"
+            onClick={async () => {
+              setSeeding(true);
+              try {
+                await fetch(`${API}/graph/seed-50`, { method: 'POST' });
+                await loadGraph();
+              } catch (e) {
+                console.error(e);
+              } finally {
+                setSeeding(false);
+              }
+            }}
+            disabled={seeding}
+            style={{ fontSize: '0.78rem', padding: '6px 12px', color: 'var(--accent-cyan)', border: '1px solid rgba(118,227,255,0.3)' }}
+          >
+            {seeding ? '⟳ Seeding 50...' : '⚡ Scale 50 Services'}
+          </button>
+          <button
+            className="btn btn-ghost"
+            onClick={loadGraph}
+            aria-label="Refresh graph"
+            style={{ fontSize: '0.78rem', padding: '6px 12px' }}
+          >
+            ↺ Refresh
+          </button>
+        </div>
       </div>
       {/* Legend */}
       <div style={{ padding: '8px 24px', display: 'flex', gap: 8, flexWrap: 'wrap', borderBottom: '1px solid var(--border)',
@@ -777,16 +797,545 @@ function AuditView() {
   );
 }
 
-// ── PR Review View ─────────────────────────────────────────────────────────
+// ── PR Scenarios for interactive testing ──────────────────────────────────
+const DEMO_SCENARIOS = [
+  {
+    id: 'p001',
+    title: 'P-001: Cross-Database Table Access',
+    service: 'order-service',
+    severity: 'high',
+    desc: 'order-service directly queries payments database table owned by payment-service.',
+    diff: `--- a/order-service/checkout.py
++++ b/order-service/checkout.py
+@@ -10,4 +10,7 @@ def process_checkout(order_data):
++    # Direct cross-service table access violation
++    from db import payments_table
++    payments = payments_table.query().all()
+     return {"status": "processed"}`,
+  },
+  {
+    id: 'p004',
+    title: 'P-004: Dual Write Without Outbox',
+    service: 'order-service',
+    severity: 'medium',
+    desc: 'Handler writes to database table AND emits Kafka event without a transactional outbox.',
+    diff: `--- a/order-service/checkout.py
++++ b/order-service/checkout.py
+@@ -25,4 +25,7 @@ def create_order(order_data):
++    # Dual-write race condition
++    orders_table.insert(order_data)
++    kafka.send("order.created", order_data)
+     return {"id": "ord_102"}`,
+  },
+  {
+    id: 'p005',
+    title: 'P-005: Missing Client Timeout',
+    service: 'order-service',
+    severity: 'medium',
+    desc: 'Outbound HTTP call to payment-service without explicit timeout parameter.',
+    diff: `--- a/order-service/checkout.py
++++ b/order-service/checkout.py
+@@ -18,3 +18,4 @@ def charge_customer(amount):
++    # HTTP call without timeout parameter
++    response = httpx.post("http://payment-service/charge", json={"amount": amount})
+     return response.json()`,
+  },
+  {
+    id: 'p006',
+    title: 'P-006: Breaking API Route Change',
+    service: 'payment-service',
+    severity: 'high',
+    desc: 'Endpoint URL altered from /charge to /api/v2/charge, breaking downstream order-service.',
+    diff: `--- a/payment-service/main.py
++++ b/payment-service/main.py
+@@ -15,3 +15,3 @@
+-@app.post("/charge")
++@app.post("/api/v2/charge")
+ def charge_payment(data):
+     return {"status": "charged"}`,
+  },
+  {
+    id: 'scale50',
+    title: '50-Service Enterprise Blast Radius',
+    service: 'payment-gateway',
+    severity: 'critical',
+    desc: 'Altering /v1/charge on payment-gateway triggers multi-hop cascading blast radius across 14 enterprise services in Checkout, Billing, and Logistics.',
+    diff: `--- a/services/payment-gateway/routes.py
++++ b/services/payment-gateway/routes.py
+@@ -24,4 +24,4 @@
+-@app.post("/v1/charge")
++@app.post("/v2/process-transaction")
+ def process_charge(payload: ChargeRequest):
+     return {"transaction_id": uuid4()}`,
+  },
+];
+
+// ── Interactive PR Blast Radius & Architecture Regression Graph ─────────────
+
+interface BlastNode extends d3.SimulationNodeDatum {
+  id: string;
+  name: string;
+  label: string;
+  type: 'touched' | 'blast' | 'violation' | 'handler';
+  icon?: string;
+  color: string;
+  evidence?: string;
+  principle?: string;
+  riskDesc?: string;
+}
+
+interface BlastLink extends d3.SimulationLinkDatum<BlastNode> {
+  source: string | BlastNode;
+  target: string | BlastNode;
+  rel: string;
+  violation?: boolean;
+}
+
+function PRBlastRadiusGraph({ result }: { result: any }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [selectedNode, setSelectedNode] = useState<BlastNode | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<BlastNode | null>(null);
+  const zoomRef = useRef<any>(null);
+
+  const touched: string[] = result?.touched_services || [];
+  const blast: string[] = result?.blast_radius || [];
+  const violations: any[] = result?.new_violations || [];
+
+  useEffect(() => {
+    if (!svgRef.current || !result) return;
+    const svg = d3.select(svgRef.current);
+    svg.selectAll('*').remove();
+
+    const w = svgRef.current.clientWidth || 550;
+    const h = svgRef.current.clientHeight || 340;
+
+    // 1. Build Nodes
+    const nodes: BlastNode[] = [];
+    const nodeMap = new Map<string, BlastNode>();
+
+    // Touched Service
+    touched.forEach((svc: string) => {
+      const node: BlastNode = {
+        id: svc,
+        name: svc,
+        label: 'Service',
+        type: 'touched',
+        icon: '⚡',
+        color: '#76e3ff',
+        riskDesc: 'Origin of pull request diff changes. Modified microservice.',
+      };
+      nodes.push(node);
+      nodeMap.set(svc, node);
+    });
+
+    // Violated Entities & Handlers
+    violations.forEach((v: any) => {
+      // Violated Table Node (P-001 or P-004)
+      if (v.table) {
+        const tableId = `Table:${v.table}`;
+        if (!nodeMap.has(tableId)) {
+          const node: BlastNode = {
+            id: tableId,
+            name: v.table,
+            label: 'Table',
+            type: 'violation',
+            icon: '🛑',
+            color: '#f87171',
+            principle: v.principle_id,
+            evidence: v.evidence || v.statement,
+            riskDesc: `[${v.principle_id}] Illegal table dependency: ${v.statement}`,
+          };
+          nodes.push(node);
+          nodeMap.set(tableId, node);
+        }
+      }
+
+      // Violated Route / Endpoint Node (P-006)
+      if (v.new_path || v.path || v.route) {
+        const routeName = v.new_path || v.path || v.route;
+        const routeId = `Route:${routeName}`;
+        if (!nodeMap.has(routeId)) {
+          const node: BlastNode = {
+            id: routeId,
+            name: routeName,
+            label: 'Route',
+            type: 'violation',
+            icon: '⚡',
+            color: '#ef4444',
+            principle: 'P-006',
+            evidence: v.evidence || 'Contract breakage',
+            riskDesc: `Breaking API Contract: alters schema/path and breaks downstream consumers`,
+          };
+          nodes.push(node);
+          nodeMap.set(routeId, node);
+        }
+      }
+
+      // Violated Handler / Symbol
+      if (v.handler) {
+        const handlerName = v.handler.split('::').pop() || v.handler;
+        const handlerId = `Symbol:${v.handler}`;
+        if (!nodeMap.has(handlerId)) {
+          const node: BlastNode = {
+            id: handlerId,
+            name: handlerName,
+            label: 'Handler',
+            type: 'handler',
+            icon: 'λ',
+            color: '#a78bfa',
+            evidence: `${v.file || ''}:${v.line || ''}`,
+            principle: v.principle_id,
+            riskDesc: `Handler implementing the architectural regression`,
+          };
+          nodes.push(node);
+          nodeMap.set(handlerId, node);
+        }
+      }
+    });
+
+    // Downstream Blast Radius Services
+    blast.forEach((svc: string) => {
+      if (!nodeMap.has(svc)) {
+        const node: BlastNode = {
+          id: svc,
+          name: svc,
+          label: 'Service',
+          type: 'blast',
+          icon: '⚠️',
+          color: '#fbbf24',
+          riskDesc: `Downstream dependency endangered by PR changes (cascading failure risk)`,
+        };
+        nodes.push(node);
+        nodeMap.set(svc, node);
+      }
+    });
+
+    // 2. Build Links
+    const links: BlastLink[] = [];
+    const touchedOrigin = touched[0] || (nodes[0] ? nodes[0].id : null);
+
+    // Violation links
+    violations.forEach((v: any) => {
+      if (v.table && touchedOrigin) {
+        links.push({
+          source: touchedOrigin,
+          target: `Table:${v.table}`,
+          rel: `${v.principle_id} (ACCESSES)`,
+          violation: true,
+        });
+      }
+      if ((v.new_path || v.path || v.route) && touchedOrigin) {
+        links.push({
+          source: touchedOrigin,
+          target: `Route:${v.new_path || v.path || v.route}`,
+          rel: `P-006 (CONTRACT)`,
+          violation: true,
+        });
+      }
+      if (v.handler && touchedOrigin) {
+        links.push({
+          source: touchedOrigin,
+          target: `Symbol:${v.handler}`,
+          rel: `CONTAINS`,
+          violation: false,
+        });
+      }
+    });
+
+    // Blast radius links: dependent callers calling touched service
+    blast.forEach((svc: string) => {
+      if (touchedOrigin) {
+        links.push({
+          source: svc,
+          target: touchedOrigin,
+          rel: 'CALLS',
+          violation: false,
+        });
+      }
+    });
+
+    // 3. Setup SVG & Defs
+    const defs = svg.append('defs');
+
+    // Filter Cyan Glow
+    const filterCyan = defs.append('filter').attr('id', 'pr-glow-cyan').attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
+    filterCyan.append('feGaussianBlur').attr('stdDeviation', 4).attr('result', 'coloredBlur');
+    const mergeCyan = filterCyan.append('feMerge');
+    mergeCyan.append('feMergeNode').attr('in', 'coloredBlur');
+    mergeCyan.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    // Filter Red Glow
+    const filterRed = defs.append('filter').attr('id', 'pr-glow-red').attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
+    filterRed.append('feGaussianBlur').attr('stdDeviation', 5).attr('result', 'coloredBlur');
+    const mergeRed = filterRed.append('feMerge');
+    mergeRed.append('feMergeNode').attr('in', 'coloredBlur');
+    mergeRed.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    // Arrow markers
+    ['cyan', 'red', 'amber'].forEach((c) => {
+      const fill = c === 'cyan' ? '#76e3ff' : c === 'red' ? '#ef4444' : '#fbbf24';
+      defs.append('marker')
+        .attr('id', `pr-arrow-${c}`)
+        .attr('markerWidth', 7).attr('markerHeight', 7)
+        .attr('refX', 22).attr('refY', 3.5)
+        .attr('orient', 'auto')
+        .append('polygon')
+        .attr('points', '0 0, 7 3.5, 0 7')
+        .attr('fill', fill);
+    });
+
+    const g = svg.append('g');
+
+    // Zoom
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.4, 2.5])
+      .on('zoom', (e) => {
+        g.attr('transform', e.transform);
+      });
+    svg.call(zoom as any);
+    zoomRef.current = zoom;
+
+    // Simulation
+    const sim = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink(links).id((d: any) => d.id).distance((d: any) => d.violation ? 75 : 95))
+      .force('charge', d3.forceManyBody().strength(-280))
+      .force('center', d3.forceCenter(w / 2, h / 2))
+      .force('collision', d3.forceCollide(32));
+
+    // Links
+    const link = g.append('g').selectAll('line')
+      .data(links).join('line')
+      .attr('stroke', d => d.violation ? '#ef4444' : '#fbbf24')
+      .attr('stroke-width', d => d.violation ? 2.5 : 1.5)
+      .attr('class', d => d.violation ? 'animated-violation-line' : '')
+      .attr('stroke-opacity', 0.85)
+      .attr('marker-end', d => d.violation ? 'url(#pr-arrow-red)' : 'url(#pr-arrow-amber)');
+
+    // Link Labels
+    const linkLabel = g.append('g').selectAll('text')
+      .data(links).join('text')
+      .attr('font-size', 7.5)
+      .attr('font-family', 'JetBrains Mono, monospace')
+      .attr('fill', d => d.violation ? '#fca5a5' : '#d1d5db')
+      .attr('text-anchor', 'middle')
+      .attr('dy', -4)
+      .text(d => d.rel);
+
+    // Drag behavior
+    const dragBehavior = d3.drag<SVGGElement, BlastNode>()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; });
+
+    // Node groups
+    const nodeGroup = g.append('g').selectAll('g').data(nodes).join('g')
+      .call(dragBehavior as any)
+      .style('cursor', 'pointer')
+      .on('click', (e, d) => setSelectedNode(d))
+      .on('mouseenter', (e, d) => setHoveredNode(d))
+      .on('mouseleave', () => setHoveredNode(null));
+
+    // Outer Aura
+    nodeGroup.filter(d => d.type === 'touched')
+      .append('circle')
+      .attr('r', 24)
+      .attr('fill', 'none')
+      .attr('stroke', '#76e3ff')
+      .attr('stroke-width', 1.5)
+      .attr('class', 'pulsing-aura')
+      .attr('filter', 'url(#pr-glow-cyan)');
+
+    nodeGroup.filter(d => d.type === 'violation')
+      .append('circle')
+      .attr('r', 20)
+      .attr('fill', 'none')
+      .attr('stroke', '#ef4444')
+      .attr('stroke-width', 2)
+      .attr('class', 'pulsing-aura')
+      .attr('filter', 'url(#pr-glow-red)');
+
+    // Circle Base
+    nodeGroup.append('circle')
+      .attr('r', d => d.type === 'touched' ? 18 : d.type === 'violation' ? 15 : 13)
+      .attr('fill', d => d.type === 'touched' ? 'rgba(118,227,255,0.22)' : d.type === 'violation' ? 'rgba(239,68,68,0.25)' : 'rgba(251,191,36,0.18)')
+      .attr('stroke', d => d.color)
+      .attr('stroke-width', d => d.type === 'touched' || d.type === 'violation' ? 2.5 : 1.5);
+
+    // Icon
+    nodeGroup.append('text')
+      .attr('dy', 4)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', d => d.type === 'touched' ? 12 : 9.5)
+      .attr('fill', d => d.color)
+      .text(d => d.icon || '⬡');
+
+    // Label
+    nodeGroup.append('text')
+      .attr('dy', d => d.type === 'touched' ? 29 : 24)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', 8)
+      .attr('font-family', 'JetBrains Mono, monospace')
+      .attr('font-weight', d => d.type === 'touched' || d.type === 'violation' ? '700' : '500')
+      .attr('fill', d => d.color)
+      .text(d => d.name.length > 18 ? d.name.slice(0, 16) + '..' : d.name);
+
+    sim.on('tick', () => {
+      link
+        .attr('x1', (d: any) => d.source.x)
+        .attr('y1', (d: any) => d.source.y)
+        .attr('x2', (d: any) => d.target.x)
+        .attr('y2', (d: any) => d.target.y);
+
+      linkLabel
+        .attr('x', (d: any) => (d.source.x + d.target.x) / 2)
+        .attr('y', (d: any) => (d.source.y + d.target.y) / 2);
+
+      nodeGroup.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+    });
+
+    if (nodes.length > 0) {
+      setSelectedNode(nodes[0]);
+    }
+  }, [result]);
+
+  const activeInspector = hoveredNode || selectedNode;
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 330 }}>
+      {/* SVG Canvas */}
+      <svg ref={svgRef} style={{ width: '100%', height: 330, borderRadius: 10, background: '#070712', border: '1px solid rgba(255,255,255,0.06)' }} />
+
+      {/* Floating Canvas Badges */}
+      <div style={{ position: 'absolute', top: 10, left: 12, display: 'flex', gap: 6, pointerEvents: 'none' }}>
+        <span className="pill pill-cyan" style={{ fontSize: '0.65rem' }}>
+          ⚡ {touched[0] || 'Unknown'} (TOUCHED)
+        </span>
+        <span className="pill pill-amber" style={{ fontSize: '0.65rem' }}>
+          ⚠️ {blast.length} Blast Radius
+        </span>
+        {violations.length > 0 && (
+          <span className="pill pill-red" style={{ fontSize: '0.65rem' }}>
+            🛑 {violations.length} Regressions
+          </span>
+        )}
+      </div>
+
+      {/* Zoom Controls */}
+      <div style={{ position: 'absolute', bottom: 10, left: 12, display: 'flex', gap: 4 }}>
+        <button
+          className="btn btn-ghost"
+          style={{ padding: '2px 8px', fontSize: '0.7rem' }}
+          onClick={() => {
+            if (svgRef.current && zoomRef.current) {
+              d3.select(svgRef.current).transition().call(zoomRef.current.scaleBy, 1.25);
+            }
+          }}
+          title="Zoom In"
+        >
+          +
+        </button>
+        <button
+          className="btn btn-ghost"
+          style={{ padding: '2px 8px', fontSize: '0.7rem' }}
+          onClick={() => {
+            if (svgRef.current && zoomRef.current) {
+              d3.select(svgRef.current).transition().call(zoomRef.current.scaleBy, 0.8);
+            }
+          }}
+          title="Zoom Out"
+        >
+          -
+        </button>
+        <button
+          className="btn btn-ghost"
+          style={{ padding: '2px 8px', fontSize: '0.7rem' }}
+          onClick={() => {
+            if (svgRef.current && zoomRef.current) {
+              d3.select(svgRef.current).transition().call(zoomRef.current.transform, d3.zoomIdentity);
+            }
+          }}
+          title="Reset Zoom"
+        >
+          ↺ Reset
+        </button>
+      </div>
+
+      {/* Interactive Inspector Overlay (Top-Right) */}
+      {activeInspector && (
+        <div
+          className="glass"
+          style={{
+            position: 'absolute',
+            top: 10,
+            right: 12,
+            maxWidth: 240,
+            padding: '10px 12px',
+            borderRadius: 8,
+            fontSize: '0.72rem',
+            background: 'rgba(13,13,24,0.92)',
+            backdropFilter: 'blur(8px)',
+            border: `1px solid ${activeInspector.color}`,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ fontWeight: 700, color: activeInspector.color }}>
+              {activeInspector.icon} {activeInspector.name}
+            </span>
+            <span style={{ fontSize: '0.62rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>
+              {activeInspector.label}
+            </span>
+          </div>
+          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            {activeInspector.riskDesc}
+          </div>
+          {activeInspector.principle && (
+            <div style={{ marginTop: 6, paddingTop: 4, borderTop: '1px solid var(--border)', color: 'var(--accent-red)', fontWeight: 600 }}>
+              Rule: [{activeInspector.principle}]
+            </div>
+          )}
+          {activeInspector.evidence && (
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace', marginTop: 2 }}>
+              {activeInspector.evidence}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function ReviewView() {
+  const [selectedScenario, setSelectedScenario] = useState<number>(0);
+  const [customDiff, setCustomDiff] = useState<string>(DEMO_SCENARIOS[0].diff);
+  const [activeTab, setActiveTab] = useState<'scenarios' | 'custom' | 'local' | 'github'>('scenarios');
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
-  const runDemo = async () => {
+  // Local Git Diff State
+  const [localDiffData, setLocalDiffData] = useState<{ diff: string; lines: number; repo_path?: string } | null>(null);
+  const [loadingLocalDiff, setLoadingLocalDiff] = useState(false);
+
+  // GitHub PR Import State
+  const [githubPrUrl, setGithubPrUrl] = useState('https://github.com/RoychowdhuryArya/codebase-guardian/pull/2');
+  const [githubPrMeta, setGithubPrMeta] = useState<any>(null);
+  const [loadingGithubPr, setLoadingGithubPr] = useState(false);
+  const [githubPrError, setGithubPrError] = useState<string | null>(null);
+
+  const runReview = async (diffToReview?: string) => {
     setLoading(true);
+    const diff = diffToReview || customDiff;
     try {
-      const res = await fetch(`${API}/review/demo-review`);
+      const res = await fetch(`${API}/review/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pr_id: `PR-#${Math.floor(100 + Math.random() * 900)}`,
+          diff: diff,
+          k_hops: 2,
+        }),
+      });
       const data = await res.json();
       setResult(data);
     } catch (e) {
@@ -796,88 +1345,469 @@ function ReviewView() {
     }
   };
 
+  const selectScenario = (index: number) => {
+    setSelectedScenario(index);
+    setCustomDiff(DEMO_SCENARIOS[index].diff);
+    setResult(null);
+  };
+
+  const fetchLocalGitDiff = async () => {
+    setLoadingLocalDiff(true);
+    try {
+      const res = await fetch(`${API}/review/local-git-diff`);
+      const data = await res.json();
+      setLocalDiffData(data);
+      if (data.diff) {
+        setCustomDiff(data.diff);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingLocalDiff(false);
+    }
+  };
+
+  const fetchGithubPr = async () => {
+    if (!githubPrUrl.trim()) return;
+    setLoadingGithubPr(true);
+    setGithubPrError(null);
+    try {
+      const res = await fetch(`${API}/review/import-github-pr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pr_url: githubPrUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to fetch GitHub PR');
+      }
+      setGithubPrMeta(data);
+      if (data.diff) {
+        setCustomDiff(data.diff);
+      }
+    } catch (e: any) {
+      setGithubPrError(e.message);
+    } finally {
+      setLoadingGithubPr(false);
+    }
+  };
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>PR Architecture Review</h2>
-        <button onClick={runDemo} disabled={loading}
-                style={{ marginLeft: 'auto', padding: '6px 16px', borderRadius: 8, fontSize: '0.8rem',
-                         background: 'linear-gradient(135deg, rgba(118,227,255,0.15), rgba(167,139,250,0.15))',
-                         border: '1px solid var(--border)', color: 'var(--text-primary)', cursor: 'pointer', fontWeight: 600 }}>
-          {loading ? '⟳ Reviewing…' : '▶ Run Demo Review (PR #42)'}
+      {/* Top Header */}
+      <div style={{ padding: '14px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12,
+                    background: 'rgba(13,13,24,0.85)', backdropFilter: 'blur(8px)' }}>
+        <span style={{ fontSize: 18 }} aria-hidden="true">⤳</span>
+        <div>
+          <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>PR Architecture Guard &amp; Blast Radius Studio</h2>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
+            Intercept PR diffs, calculate downstream blast radius, and auto-remediate with NVIDIA Nemotron
+          </div>
+        </div>
+        <button
+          className="btn btn-primary"
+          onClick={() => runReview()}
+          disabled={loading}
+          style={{ marginLeft: 'auto', fontSize: '0.82rem', padding: '8px 18px' }}
+        >
+          {loading ? '⟳ Evaluating Graph...' : '🛡️ Run Architecture Review'}
         </button>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
-        {!result && !loading && (
-          <div style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 60 }}>
-            <div style={{ fontSize: '3rem', marginBottom: 16 }}>⤳</div>
-            <div style={{ fontSize: '1.1rem', marginBottom: 8, color: 'var(--text-muted)' }}>
-              Ready to review PR
-            </div>
-            <div style={{ fontSize: '0.85rem' }}>
-              Click "Run Demo Review" to see FalkorDB graph branching in action
+        {/* Scenario Selection Tabs */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)' }}>
+              Diff Source:
+            </span>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                className={`btn ${activeTab === 'scenarios' ? 'btn-ghost' : ''}`}
+                style={{ fontSize: '0.74rem', padding: '4px 10px', background: activeTab === 'scenarios' ? 'rgba(94,207,255,0.15)' : 'transparent', color: activeTab === 'scenarios' ? 'var(--accent-cyan)' : 'var(--text-dim)' }}
+                onClick={() => setActiveTab('scenarios')}
+              >
+                Preloaded Scenarios
+              </button>
+              <button
+                className={`btn ${activeTab === 'custom' ? 'btn-ghost' : ''}`}
+                style={{ fontSize: '0.74rem', padding: '4px 10px', background: activeTab === 'custom' ? 'rgba(94,207,255,0.15)' : 'transparent', color: activeTab === 'custom' ? 'var(--accent-cyan)' : 'var(--text-dim)' }}
+                onClick={() => setActiveTab('custom')}
+              >
+                ✍️ Paste Custom Diff
+              </button>
+              <button
+                className={`btn ${activeTab === 'local' ? 'btn-ghost' : ''}`}
+                style={{ fontSize: '0.74rem', padding: '4px 10px', background: activeTab === 'local' ? 'rgba(94,207,255,0.15)' : 'transparent', color: activeTab === 'local' ? 'var(--accent-cyan)' : 'var(--text-dim)' }}
+                onClick={() => {
+                  setActiveTab('local');
+                  if (!localDiffData) fetchLocalGitDiff();
+                }}
+              >
+                📁 Local Git Workspace
+              </button>
+              <button
+                className={`btn ${activeTab === 'github' ? 'btn-ghost' : ''}`}
+                style={{ fontSize: '0.74rem', padding: '4px 10px', background: activeTab === 'github' ? 'rgba(94,207,255,0.15)' : 'transparent', color: activeTab === 'github' ? 'var(--accent-cyan)' : 'var(--text-dim)' }}
+                onClick={() => setActiveTab('github')}
+              >
+                🐙 GitHub PR Import
+              </button>
             </div>
           </div>
-        )}
 
-        {result && (
-          <div className="animate-fade-in">
-            {/* Summary header */}
-            <div style={{ padding: '20px 24px', borderRadius: 12, marginBottom: 20,
-                          background: 'linear-gradient(135deg, rgba(118,227,255,0.05), rgba(167,139,250,0.05))',
-                          border: '1px solid var(--border)' }}>
-              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 16 }}>
-                <div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>PR</div>
-                  <div style={{ fontWeight: 700, color: 'var(--accent-cyan)' }}>{result.pr_id}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>New Violations</div>
-                  <div style={{ fontWeight: 700, fontSize: '1.5rem',
-                                color: result.new_violation_count > 0 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
-                    {result.new_violation_count}
+          {activeTab === 'scenarios' && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+              {DEMO_SCENARIOS.map((s, idx) => (
+                <div
+                  key={s.id}
+                  onClick={() => selectScenario(idx)}
+                  className="glass"
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                    border: `1px solid ${selectedScenario === idx ? 'var(--accent-cyan)' : 'var(--border)'}`,
+                    background: selectedScenario === idx ? 'rgba(94,207,255,0.08)' : 'rgba(255,255,255,0.02)',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: '0.78rem', fontWeight: 700, color: selectedScenario === idx ? 'var(--accent-cyan)' : 'var(--text-primary)' }}>
+                      {s.title}
+                    </span>
+                    <span className={`badge-${s.severity}`} style={{ fontSize: '0.65rem', padding: '1px 6px', borderRadius: 12 }}>
+                      {s.severity.toUpperCase()}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                    {s.desc}
                   </div>
                 </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'custom' && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: 6 }}>
+                Paste any unified git diff (e.g. from <code>git diff origin/main...HEAD</code>):
+              </div>
+              <textarea
+                value={customDiff}
+                onChange={(e) => setCustomDiff(e.target.value)}
+                rows={6}
+                style={{
+                  width: '100%',
+                  background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  padding: '10px 14px',
+                  color: 'var(--text-primary)',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  fontSize: '0.78rem',
+                  lineHeight: 1.5,
+                  resize: 'vertical',
+                }}
+              />
+            </div>
+          )}
+
+          {activeTab === 'local' && (
+            <div className="glass" style={{ padding: '16px 20px', borderRadius: 12, marginTop: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
                 <div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>Blast Radius</div>
-                  <div style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--accent-amber)' }}>
-                    {result.blast_radius?.length || 0} services
+                  <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    📂 Local Repository Auto-Detection
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: 2 }}>
+                    Workspace path: <code>{localDiffData?.repo_path || 'Scanning repository root...'}</code>
                   </div>
                 </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={fetchLocalGitDiff}
+                    disabled={loadingLocalDiff}
+                    style={{ fontSize: '0.74rem', padding: '5px 12px' }}
+                  >
+                    {loadingLocalDiff ? '⟳ Reading git...' : '↺ Refresh Git Diff'}
+                  </button>
+                  {localDiffData && localDiffData.lines > 0 && (
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => runReview(localDiffData.diff)}
+                      disabled={loading}
+                      style={{ fontSize: '0.74rem', padding: '5px 14px' }}
+                    >
+                      🛡️ Audit Workspace Changes
+                    </button>
+                  )}
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Touched:</span>
-                {result.touched_services?.map((s: string) => (
-                  <span key={s} style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: 12,
-                    background: 'rgba(118,227,255,0.1)', border: '1px solid rgba(118,227,255,0.2)',
-                    color: 'var(--accent-cyan)' }}>{s}</span>
-                ))}
-              </div>
-              {result.blast_radius?.length > 0 && (
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Blast radius:</span>
-                  {result.blast_radius.map((s: string) => (
-                    <span key={s} style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: 12,
-                      background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.2)',
-                      color: 'var(--accent-amber)' }}>{s}</span>
-                  ))}
+
+              {localDiffData && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                    <span className={`pill ${localDiffData.lines > 0 ? 'pill-cyan' : 'pill-green'}`} style={{ fontSize: '0.72rem', fontWeight: 600 }}>
+                      {localDiffData.lines > 0
+                        ? `⚡ ${localDiffData.lines} modified lines detected in working tree`
+                        : '✓ Clean working tree (no uncommitted diff)'}
+                    </span>
+                  </div>
+                  {localDiffData.lines > 0 ? (
+                    <pre style={{ margin: 0, padding: 12, borderRadius: 8, background: '#090912', fontSize: '0.74rem', fontFamily: 'JetBrains Mono, monospace', overflowX: 'auto', border: '1px solid rgba(255,255,255,0.06)', maxHeight: 200 }}>
+                      {localDiffData.diff.split('\n').slice(0, 50).map((line, idx) => (
+                        <div key={idx} style={{
+                          color: line.startsWith('+') ? '#4ade80' : line.startsWith('-') ? '#f87171' : line.startsWith('@@') ? '#a78bfa' : 'var(--text-muted)',
+                          background: line.startsWith('+') ? 'rgba(74,222,128,0.08)' : line.startsWith('-') ? 'rgba(248,113,113,0.08)' : 'transparent',
+                        }}>
+                          {line}
+                        </div>
+                      ))}
+                      {localDiffData.diff.split('\n').length > 50 && (
+                        <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', marginTop: 4 }}>
+                          ...and {localDiffData.diff.split('\n').length - 50} more lines
+                        </div>
+                      )}
+                    </pre>
+                  ) : (
+                    <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                      Make local edits in any service or switch to a feature branch to inspect uncommitted diffs live.
+                    </div>
+                  )}
                 </div>
               )}
             </div>
+          )}
 
-            {/* Violations */}
-            <div style={{ fontWeight: 600, marginBottom: 12, color: 'var(--text-muted)', fontSize: '0.85rem',
-                          textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-              New Violations ({result.new_violation_count})
+          {activeTab === 'github' && (
+            <div className="glass" style={{ padding: '16px 20px', borderRadius: 12, marginTop: 8 }}>
+              <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+                🐙 Import Live GitHub Pull Request
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginBottom: 12 }}>
+                Enter full GitHub pull request URL or shorthand (e.g. <code>owner/repo#123</code>) to fetch its raw unified diff and metadata.
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+                <input
+                  type="text"
+                  value={githubPrUrl}
+                  onChange={(e) => setGithubPrUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo/pull/123"
+                  style={{
+                    flex: 1,
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    padding: '8px 14px',
+                    color: 'var(--text-primary)',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    fontSize: '0.8rem',
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') fetchGithubPr();
+                  }}
+                />
+                <button
+                  className="btn btn-primary"
+                  onClick={fetchGithubPr}
+                  disabled={loadingGithubPr}
+                  style={{ fontSize: '0.78rem', padding: '8px 16px', whiteSpace: 'nowrap' }}
+                >
+                  {loadingGithubPr ? '⟳ Fetching PR...' : 'Fetch PR Diff'}
+                </button>
+              </div>
+
+              {githubPrError && (
+                <div style={{ padding: '8px 12px', borderRadius: 8, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: 'var(--accent-red)', fontSize: '0.78rem', marginBottom: 12 }}>
+                  ⚠️ {githubPrError}
+                </div>
+              )}
+
+              {githubPrMeta && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(118,227,255,0.06)', borderRadius: 8, border: '1px solid rgba(118,227,255,0.2)', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: '0.86rem', color: 'var(--accent-cyan)' }}>
+                        {githubPrMeta.title}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: 2 }}>
+                        PR #{githubPrMeta.pr_number} by <strong>@{githubPrMeta.author}</strong> · {githubPrMeta.changed_files} file(s) changed
+                      </div>
+                    </div>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => runReview(githubPrMeta.diff)}
+                      disabled={loading}
+                      style={{ fontSize: '0.75rem', padding: '6px 14px' }}
+                    >
+                      🛡️ Review This PR
+                    </button>
+                  </div>
+
+                  {githubPrMeta.diff && (
+                    <pre style={{ margin: 0, padding: 12, borderRadius: 8, background: '#090912', fontSize: '0.74rem', fontFamily: 'JetBrains Mono, monospace', overflowX: 'auto', border: '1px solid rgba(255,255,255,0.06)', maxHeight: 200 }}>
+                      {githubPrMeta.diff.split('\n').slice(0, 60).map((line: string, idx: number) => (
+                        <div key={idx} style={{
+                          color: line.startsWith('+') ? '#4ade80' : line.startsWith('-') ? '#f87171' : line.startsWith('@@') ? '#a78bfa' : 'var(--text-muted)',
+                          background: line.startsWith('+') ? 'rgba(74,222,128,0.08)' : line.startsWith('-') ? 'rgba(248,113,113,0.08)' : 'transparent',
+                        }}>
+                          {line}
+                        </div>
+                      ))}
+                    </pre>
+                  )}
+                </div>
+              )}
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          )}
+        </div>
+
+        {/* Diff preview box before running */}
+        {!result && (
+          <div className="glass" style={{ padding: '16px 20px', borderRadius: 12, marginBottom: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-dim)' }}>
+                UNIFIED DIFF PREVIEW — TOUCHES SERVICE: <strong style={{ color: 'var(--accent-cyan)' }}>{DEMO_SCENARIOS[selectedScenario]?.service || 'Custom / Imported'}</strong>
+              </span>
+              <button className="btn btn-ghost" onClick={() => runReview()} style={{ fontSize: '0.74rem', padding: '4px 10px' }}>
+                ▶ Test this Diff
+              </button>
+            </div>
+            <pre style={{ margin: 0, padding: 12, borderRadius: 8, background: '#090912', fontSize: '0.75rem', fontFamily: 'JetBrains Mono, monospace', overflowX: 'auto', border: '1px solid rgba(255,255,255,0.06)' }}>
+              {customDiff.split('\n').map((line, idx) => (
+                <div key={idx} style={{
+                  color: line.startsWith('+') ? '#4ade80' : line.startsWith('-') ? '#f87171' : line.startsWith('@@') ? '#a78bfa' : 'var(--text-muted)',
+                  background: line.startsWith('+') ? 'rgba(74,222,128,0.08)' : line.startsWith('-') ? 'rgba(248,113,113,0.08)' : 'transparent',
+                }}>
+                  {line}
+                </div>
+              ))}
+            </pre>
+          </div>
+        )}
+
+        {/* Review Results */}
+        {result && (
+          <div className="animate-fade-up">
+            {/* Verdict Banner */}
+            <div style={{
+              padding: '18px 24px',
+              borderRadius: 12,
+              marginBottom: 20,
+              background: result.new_violation_count > 0 ? 'linear-gradient(135deg, rgba(255,107,107,0.12), rgba(255,159,67,0.05))' : 'linear-gradient(135deg, rgba(61,224,122,0.12), rgba(94,207,255,0.05))',
+              border: `1px solid ${result.new_violation_count > 0 ? 'rgba(255,107,107,0.3)' : 'rgba(61,224,122,0.3)'}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 20,
+              flexWrap: 'wrap',
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                  <span style={{ fontSize: 24 }}>{result.new_violation_count > 0 ? '🛑' : '✅'}</span>
+                  <div style={{ fontSize: '1.2rem', fontWeight: 800, color: result.new_violation_count > 0 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+                    {result.new_violation_count > 0 ? 'PUSH BLOCKED — Architectural Regression Detected' : 'PR APPROVED — Architecture Compliant'}
+                  </div>
+                </div>
+                <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)', maxWidth: 640, lineHeight: 1.5 }}>
+                  {result.new_violation_count > 0
+                    ? `This PR introduces ${result.new_violation_count} new architectural rule violation(s) and endangers ${result.blast_radius?.length || 0} downstream microservice(s). Review proposed Nemotron AI remediation below.`
+                    : 'FalkorDB base→head branch comparison confirms 0 regressions and safe microservice boundaries.'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 16 }}>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Touched</div>
+                  <div style={{ fontWeight: 700, color: 'var(--accent-cyan)' }}>{result.touched_services?.[0] || 'Unknown'}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Blast Radius</div>
+                  <div style={{ fontWeight: 800, fontSize: '1.4rem', color: 'var(--accent-amber)' }}>{result.blast_radius?.length || 0}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Split View: Proposed Diff vs Impact / Blast Radius Flow */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+              {/* Left: Diff Preview */}
+              <div className="glass" style={{ padding: '16px 20px', borderRadius: 12 }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 10, color: 'var(--text-muted)' }}>
+                  📄 PROPOSED CODE CHANGE
+                </div>
+                <pre style={{ margin: 0, padding: 12, borderRadius: 8, background: '#090912', fontSize: '0.74rem', fontFamily: 'JetBrains Mono, monospace', overflowX: 'auto', border: '1px solid rgba(255,255,255,0.06)', maxHeight: 220 }}>
+                  {customDiff.split('\n').map((line, idx) => (
+                    <div key={idx} style={{
+                      color: line.startsWith('+') ? '#4ade80' : line.startsWith('-') ? '#f87171' : line.startsWith('@@') ? '#a78bfa' : 'var(--text-muted)',
+                      background: line.startsWith('+') ? 'rgba(74,222,128,0.08)' : line.startsWith('-') ? 'rgba(248,113,113,0.08)' : 'transparent',
+                    }}>
+                      {line}
+                    </div>
+                  ))}
+                </pre>
+              </div>
+
+              {/* Right: Blast Radius & Impact Map */}
+              <div className="glass" style={{ padding: '16px 20px', borderRadius: 12, display: 'flex', flexDirection: 'column' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--accent-amber)' }}>
+                    💥 INTERACTIVE BLAST RADIUS &amp; REGRESSION GRAPH
+                  </div>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-dim)' }}>
+                    Hover or click node to inspect
+                  </span>
+                </div>
+
+                {/* D3 Subgraph */}
+                <PRBlastRadiusGraph result={result} />
+
+                {/* Flow Pills Summary */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '8px 12px', background: 'rgba(251,191,36,0.04)', borderRadius: 8, border: '1px solid rgba(251,191,36,0.15)', marginTop: 10 }}>
+                  <span className="pill pill-cyan" style={{ fontWeight: 700, fontSize: '0.68rem' }}>
+                    ⚡ {result.touched_services?.[0]} (TOUCHED)
+                  </span>
+                  <span style={{ color: 'var(--accent-amber)', fontSize: '0.72rem' }}>──►</span>
+                  {result.blast_radius && result.blast_radius.length > 0 ? (
+                    result.blast_radius.slice(0, 7).map((s: string) => (
+                      <span key={s} className="pill pill-red" style={{ fontWeight: 600, fontSize: '0.68rem' }}>
+                        ⚠️ {s}
+                      </span>
+                    ))
+                  ) : (
+                    <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)' }}>No downstream callers affected</span>
+                  )}
+                  {result.blast_radius && result.blast_radius.length > 7 && (
+                    <span style={{ fontSize: '0.68rem', color: 'var(--accent-amber)', fontWeight: 600 }}>
+                      +{result.blast_radius.length - 7} more services
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Detected Violations & AI Remediation */}
+            <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Detected Violations ({result.new_violation_count})
+              </div>
+              <span style={{ fontSize: '0.78rem', color: 'var(--text-dim)' }}>
+                Click violation card to inspect &amp; trigger NVIDIA Nemotron auto-remediation
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {result.new_violations?.map((v: Violation, i: number) => (
                 <ViolationCard key={i} v={v} index={i} />
               ))}
               {result.new_violation_count === 0 && (
-                <div style={{ textAlign: 'center', padding: 40, color: 'var(--accent-green)' }}>
-                  ✅ This PR introduces no new architecture violations
+                <div className="glass" style={{ textAlign: 'center', padding: 40, borderRadius: 12, color: 'var(--accent-green)' }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+                  <div style={{ fontWeight: 700, fontSize: '1rem' }}>No Architecture Regressions Found</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                    This pull request is safe to merge into main.
+                  </div>
                 </div>
               )}
             </div>
@@ -1059,7 +1989,7 @@ function DashboardView({ onNav }: { onNav: (p: string) => void }) {
         }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
           <span className="pill pill-green" style={{ fontSize: '0.65rem' }}>● Live</span>
-          <span className="pill pill-violet" style={{ fontSize: '0.65rem' }}>NVIDIA × FalkorDB Hackathon 2026</span>
+          <span className="pill pill-cyan" style={{ fontSize: '0.65rem' }}>Autonomous Microservice Governance</span>
         </div>
         <h1 style={{ fontSize: '2.2rem', fontWeight: 900, margin: '8px 0 10px', letterSpacing: '-0.04em', lineHeight: 1.1 }}>
           Architecture <span className="grad-cyan-violet">Guardian</span>
