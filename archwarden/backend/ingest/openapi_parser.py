@@ -210,11 +210,11 @@ def upsert_openapi_routes(
                 "service": route["service"],
             },
         )
-        # Upsert Route node
+        # Upsert Route node — identity includes method to prevent GET/POST collision
         store.query(
             """
-            MERGE (r:Route {path_template: $path_template, service: $service})
-            SET r.method = $method, r.protocol = $protocol,
+            MERGE (r:Route {path_template: $path_template, service: $service, method: $method})
+            SET r.protocol = $protocol,
                 r.file = $file, r.line = $line
             WITH r
             MATCH (sym:Symbol {qname: $handler_qname})
@@ -258,12 +258,13 @@ def upsert_compose_services(
     """
     port_map: dict[str, list[str]] = {}
 
+    # ── Pass 1: Upsert ALL Service nodes first ────────────────────────────────
+    # This ensures dependency edges never miss a node due to YAML ordering.
     for svc in compose_services:
         language = "unknown"
         framework = "docker"
         if svc["build"]:
-            # Heuristic: built services are application services
-            language = "python"  # default; will be overridden during AST walk
+            language = "python"  # default; overridden during AST walk
         elif svc["is_database"]:
             language = "database"
             framework = "db"
@@ -281,8 +282,10 @@ def upsert_compose_services(
                 "image": svc["image"] or "",
             },
         )
+        port_map[svc["name"]] = svc["ports"]
 
-        # Create CALLS edges from depends_on
+    # ── Pass 2: Create CALLS dependency edges AFTER all nodes exist ───────────
+    for svc in compose_services:
         for dep in svc["depends_on"]:
             store.query(
                 """
@@ -293,8 +296,6 @@ def upsert_compose_services(
                 """,
                 {"caller": svc["name"], "callee": dep},
             )
-
-        port_map[svc["name"]] = svc["ports"]
 
     return port_map
 
@@ -316,9 +317,15 @@ def scan_and_ingest_openapi(
     stats = {"routes": 0, "schemas": 0}
     repo_path = Path(repo_dir).resolve()
 
-    for spec_file in sorted(repo_path.rglob("openapi.ya?ml")) + sorted(repo_path.rglob("openapi.json")):
+    # Collect all openapi spec files using separate globs (rglob does not support ? wildcard)
+    _skip = ("node_modules", "venv", ".venv", "__pycache__", ".git")
+    spec_files: list[Path] = []
+    for pattern in ("openapi.yaml", "openapi.yml", "openapi.json"):
+        spec_files.extend(sorted(repo_path.rglob(pattern)))
+
+    for spec_file in spec_files:
         # Skip node_modules / venv
-        if any(p in spec_file.parts for p in ("node_modules", "venv", ".venv", "__pycache__", ".git")):
+        if any(p in spec_file.parts for p in _skip):
             continue
 
         svc = service_name or spec_file.parent.name

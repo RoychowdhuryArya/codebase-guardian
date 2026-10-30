@@ -147,8 +147,8 @@ def _upsert_symbol(store: GraphStore, sym: dict) -> None:
 def _upsert_route(store: GraphStore, route: dict) -> None:
     store.query(
         """
-        MERGE (r:Route {path_template: $path_template, service: $service})
-        SET r.method = $method, r.protocol = $protocol, r.file = $file, r.line = $line
+        MERGE (r:Route {path_template: $path_template, service: $service, method: $method})
+        SET r.protocol = $protocol, r.file = $file, r.line = $line
         WITH r
         MATCH (sym:Symbol {qname: $handler_qname})
         MERGE (sym)-[:DEFINES]->(r)
